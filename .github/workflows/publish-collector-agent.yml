@@ -78,7 +78,8 @@ jobs:
 
       - name: Set short SHA
         shell: bash
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+        run: |
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -89,7 +90,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_REPOSITORY }}
           tags: |
-            type=raw,value=sha-${{ env.SHORT_SHA }}
+            type=raw,value=${{ env.SHORT_SHA }}
           labels: |
             org.opencontainers.image.title=ClusterSage Collector Agent
             org.opencontainers.image.description=ClusterSage collector agent container image
@@ -109,4 +110,5 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Show published image
-        run: echo "${{ env.IMAGE_REPOSITORY }}:sha-${{ env.SHORT_SHA }}"
+        run: |
+          echo "${{ env.IMAGE_REPOSITORY }}:${{ env.SHORT_SHA }}"

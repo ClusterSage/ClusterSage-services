@@ -18,6 +18,8 @@ env:
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+  GITOPS_REPOSITORY: ClusterSage/ClusterSage-gitops
+  GITOPS_VALUES_FILE: environments/prod/values/clustersage-values.yaml
 
 jobs:
   validate:
@@ -78,7 +80,8 @@ jobs:
 
       - name: Set short SHA
         shell: bash
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+        run: |
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -89,7 +92,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_REPOSITORY }}
           tags: |
-            type=raw,value=sha-${{ env.SHORT_SHA }}
+            type=raw,value=${{ env.SHORT_SHA }}
           labels: |
             org.opencontainers.image.title=ClusterSage Platform API
             org.opencontainers.image.description=ClusterSage platform API container image
@@ -109,4 +112,44 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Show published image
-        run: echo "${{ env.IMAGE_REPOSITORY }}:sha-${{ env.SHORT_SHA }}"
+        run: |
+          echo "${{ env.IMAGE_REPOSITORY }}:${{ env.SHORT_SHA }}"
+
+      - name: Validate GitOps promotion configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${{ secrets.GITOPS_REPO_TOKEN }}" ] || { echo "Missing GITOPS_REPO_TOKEN secret."; exit 1; }
+
+      - name: Install yq
+        shell: bash
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPOSITORY }}
+          ref: main
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops
+
+      - name: Promote platform API image tag in GitOps
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd gitops
+          export SHORT_SHA="${SHORT_SHA}"
+          yq -i '.backend.image.tag = env(SHORT_SHA)' "${GITOPS_VALUES_FILE}"
+          yq -i '.migrationJob.image.tag = env(SHORT_SHA)' "${GITOPS_VALUES_FILE}"
+          if git diff --quiet -- "${GITOPS_VALUES_FILE}"; then
+            echo "No GitOps change required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${GITOPS_VALUES_FILE}"
+          git commit -m "Promote platform API image to ${SHORT_SHA}"
+          git push origin HEAD:main
