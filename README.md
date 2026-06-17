@@ -17,10 +17,13 @@ Service-oriented source tree for ClusterSage.
 ```bash
 cd services/platform-api
 python -m compileall app
+pytest
+alembic upgrade head --sql > migration-preview.sql
 
 cd ../email-worker
 python -m compileall app
 
 cd ../collector-agent
 python -m compileall app
+pytest
 ```

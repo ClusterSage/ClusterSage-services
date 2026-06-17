@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
@@ -95,13 +95,125 @@ class AIRecommendation(Base):
     recommendation_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+class AILogFinding(Base, TimestampMixin):
+    __tablename__ = "ai_log_findings"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    resource_kind: Mapped[str | None] = mapped_column(Text)
+    resource_name: Mapped[str | None] = mapped_column(Text)
+    namespace: Mapped[str | None] = mapped_column(Text)
+    pod_name: Mapped[str | None] = mapped_column(Text)
+    container_name: Mapped[str | None] = mapped_column(Text)
+    workload_kind: Mapped[str | None] = mapped_column(Text)
+    workload_name: Mapped[str | None] = mapped_column(Text)
+    log_signature: Mapped[str] = mapped_column(Text, nullable=False)
+    matched_pattern: Mapped[str | None] = mapped_column(Text)
+    raw_evidence_sample: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+    preliminary_severity: Mapped[str] = mapped_column(Text, nullable=False)
+
+class AIIncident(Base, TimestampMixin):
+    __tablename__ = "ai_incidents"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    resource_kind: Mapped[str | None] = mapped_column(Text)
+    resource_name: Mapped[str | None] = mapped_column(Text)
+    scope: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    incident_type: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="open")
+    namespace: Mapped[str | None] = mapped_column(Text)
+    pod_name: Mapped[str | None] = mapped_column(Text)
+    container_name: Mapped[str | None] = mapped_column(Text)
+    workload_kind: Mapped[str | None] = mapped_column(Text)
+    workload_name: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+    ai_summary: Mapped[str | None] = mapped_column(Text)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    confidence_score: Mapped[float | None] = mapped_column(Float)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+class RemediationSuggestion(Base, TimestampMixin):
+    __tablename__ = "remediation_suggestions"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    incident_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_incidents.id", ondelete="CASCADE"), index=True)
+    resource_kind: Mapped[str | None] = mapped_column(Text)
+    resource_name: Mapped[str | None] = mapped_column(Text)
+    suggestion_type: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_level: Mapped[str] = mapped_column(Text, nullable=False)
+    requires_approval: Mapped[bool] = mapped_column(default=True)
+    is_executable: Mapped[bool] = mapped_column(default=False)
+    executable_action_type: Mapped[str | None] = mapped_column(Text)
+    action_payload: Mapped[dict | None] = mapped_column(JSONB)
+    ai_model: Mapped[str | None] = mapped_column(Text)
+    prompt_version: Mapped[str | None] = mapped_column(Text)
+    confidence_score: Mapped[float | None] = mapped_column(Float)
+
+class RemediationApproval(Base):
+    __tablename__ = "remediation_approvals"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    suggestion_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("remediation_suggestions.id", ondelete="CASCADE"), index=True)
+    approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    approval_status: Mapped[str] = mapped_column(Text, default="pending")
+    approval_reason: Mapped[str | None] = mapped_column(Text)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class RemediationAction(Base):
+    __tablename__ = "remediation_actions"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    suggestion_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("remediation_suggestions.id", ondelete="CASCADE"), index=True)
+    approval_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("remediation_approvals.id", ondelete="CASCADE"), index=True)
+    action_type: Mapped[str] = mapped_column(Text, nullable=False)
+    action_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(Text, default="queued")
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    picked_up_by_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    picked_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    result: Mapped[dict | None] = mapped_column(JSONB)
+
+class AIClusterQuery(Base):
+    __tablename__ = "ai_cluster_queries"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    parsed_query: Mapped[dict | None] = mapped_column(JSONB)
+    answer_summary: Mapped[str | None] = mapped_column(Text)
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    ai_model: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="SET NULL"), index=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     cluster_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="SET NULL"))
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     action: Mapped[str] = mapped_column(Text, nullable=False)
     actor_type: Mapped[str] = mapped_column(Text, nullable=False)
     details: Mapped[dict | None] = mapped_column(JSONB)
+    ip_address: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

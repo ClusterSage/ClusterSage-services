@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from kubernetes import client, config
 from kubernetes.client import ApiException
@@ -49,6 +50,50 @@ def collect_events() -> list[dict[str, Any]]:
     load_config()
     core = client.CoreV1Api()
     return [sanitize(i) for i in core.list_event_for_all_namespaces(watch=False).items]
+
+def get_deployment(namespace: str, name: str):
+    load_config()
+    apps = client.AppsV1Api()
+    return apps.read_namespaced_deployment(name=name, namespace=namespace)
+
+def apply_rollout_restart(action_id: str, namespace: str, workload_name: str) -> dict[str, Any]:
+    deployment = get_deployment(namespace, workload_name)
+    annotations = ((deployment.spec.template.metadata.annotations or {}) if deployment.spec and deployment.spec.template and deployment.spec.template.metadata else {}) or {}
+    existing_action_id = annotations.get("clustersage.io/last-remediation-action-id")
+    existing_restart_time = annotations.get("kubectl.kubernetes.io/restartedAt")
+    if existing_action_id == action_id:
+        return {
+            "namespace": namespace,
+            "workload_kind": "Deployment",
+            "workload_name": workload_name,
+            "already_applied": True,
+            "restarted_at": existing_restart_time,
+        }
+
+    restarted_at = datetime.now(timezone.utc).isoformat()
+    patch_body = {
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        **annotations,
+                        "kubectl.kubernetes.io/restartedAt": restarted_at,
+                        "clustersage.io/last-remediation-action-id": action_id,
+                    }
+                }
+            }
+        }
+    }
+    load_config()
+    apps = client.AppsV1Api()
+    apps.patch_namespaced_deployment(name=workload_name, namespace=namespace, body=patch_body)
+    return {
+        "namespace": namespace,
+        "workload_kind": "Deployment",
+        "workload_name": workload_name,
+        "already_applied": False,
+        "restarted_at": restarted_at,
+    }
 
 async def snapshot_loop(state: AgentState) -> None:
     while True:

@@ -2,6 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from app.actions import action_loop
 from app.config import settings
 from app.heartbeat import heartbeat_loop
 from app.kubernetes_client import snapshot_loop
@@ -20,7 +21,12 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logging.getLogger(__name__).error("registration failed: %s", exc)
             await asyncio.sleep(10)
-    tasks = [asyncio.create_task(heartbeat_loop(state)), asyncio.create_task(snapshot_loop(state)), asyncio.create_task(flush_loop(state))]
+    tasks = [
+        asyncio.create_task(heartbeat_loop(state)),
+        asyncio.create_task(snapshot_loop(state)),
+        asyncio.create_task(flush_loop(state)),
+        asyncio.create_task(action_loop(state)),
+    ]
     yield
     for task in tasks:
         task.cancel()

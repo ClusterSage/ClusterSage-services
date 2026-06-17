@@ -1,9 +1,12 @@
 import gzip
 import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.ai import AIIncidentAnalysisService
 from app.audit.service import write_audit
 from app.auth.dependencies import get_current_agent
+from app.core.config import settings
 from app.db.session import get_session
 from app.issues.detection import detect_from_events, detect_from_snapshot
 from app.models.entities import Cluster, ClusterSnapshot, LogBatch
@@ -11,6 +14,8 @@ from app.schemas.api import EventsIngestRequest, LogsIngestRequest, SnapshotInge
 from app.storage.blob import BlobWriter
 
 router = APIRouter(tags=["ingestion"])
+log = logging.getLogger(__name__)
+ai_incident_analysis_service = AIIncidentAnalysisService()
 
 async def parse_payload(request: Request) -> dict:
     body = await request.body()
@@ -28,6 +33,30 @@ async def ingest_logs(request: Request, cluster: Cluster = Depends(get_current_a
     batch = LogBatch(organization_id=cluster.organization_id, cluster_id=cluster.id, blob_path=blob_path, log_count=len(payload.logs), size_bytes=size, start_time=payload.start_time, end_time=payload.end_time)
     session.add(batch)
     await session.commit()
+    try:
+        analysis_result = await ai_incident_analysis_service.analyze_log_records(session, cluster, payload.logs)
+        await write_audit(
+            session,
+            "logs.ingested",
+            "agent",
+            cluster.organization_id,
+            cluster_id=cluster.id,
+            agent_id=cluster.id,
+            ip_address=request.client.host if request.client else None,
+            details={
+                "blob_path": blob_path,
+                "size_bytes": size,
+                "log_count": len(payload.logs),
+                "groups_processed": analysis_result.groups_processed,
+                "incidents_upserted": analysis_result.incidents_upserted,
+                "suggestions_upserted": analysis_result.suggestions_upserted,
+                "ai_analysis_enabled": settings.ai_analysis_enabled,
+            },
+        )
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        log.exception("log ingestion AI analysis failed for cluster %s: %s", cluster.id, exc)
     return {"ok": True, "blob_path": blob_path, "log_count": len(payload.logs)}
 
 @router.post("/api/ingest/events")

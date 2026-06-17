@@ -29,6 +29,20 @@ class Settings(BaseSettings):
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
     azure_openai_deployment: str = ""
+    azure_ai_foundry_endpoint: str = ""
+    azure_ai_foundry_project_name: str = ""
+    azure_ai_foundry_project_id: str = ""
+    azure_ai_foundry_deployment_name: str = ""
+    azure_ai_foundry_api_version: str = "2024-05-01-preview"
+    azure_client_id: str = ""
+    ai_analysis_enabled: bool = False
+    ai_cluster_query_enabled: bool = False
+    remediation_approval_enabled: bool = True
+    agent_remediation_enabled: bool = False
+    ai_max_log_lines_per_analysis: int = 200
+    ai_max_tokens: int = 1200
+    ai_temperature: float = 0
+    ai_prompt_version: str = "v1"
 
     @property
     def cors_origins(self) -> list[str]:

@@ -4,14 +4,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.ai.cluster_query import ClusterQueryService
 from app.audit.service import write_audit
 from app.auth.dependencies import get_current_user
 from app.db.session import get_session
-from app.models.entities import Cluster, ClusterSnapshot, Issue, LogBatch, User
-from app.schemas.api import ClusterResponse, IssueResponse, LogBatchResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
+from app.core.config import settings
+from app.models.entities import AIIncident, Cluster, ClusterSnapshot, Issue, LogBatch, RemediationAction, RemediationApproval, RemediationSuggestion, User
+from app.schemas.api import AIClusterQueryRequest, AIClusterQueryResponse, AIIncidentResponse, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
 from app.storage.blob import BlobReader
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
+cluster_query_service = ClusterQueryService()
 
 RESOURCE_KEYS = {
     "pod": "pods",
@@ -322,6 +325,71 @@ def related_pod_refs(snapshot: dict[str, Any], key: str, namespace: str | None, 
 
     return refs
 
+def incident_matches_resource(
+    incident: AIIncident,
+    key: str,
+    expected_namespace: str | None,
+    name: str,
+    target_pods: set[tuple[str | None, str]],
+) -> bool:
+    if key == "namespaces":
+        return incident.namespace == name
+    if key == "pods":
+        return incident.namespace == expected_namespace and incident.pod_name == name
+    if incident.namespace is not None and incident.pod_name is not None and (incident.namespace, incident.pod_name) in target_pods:
+        return True
+    if incident.namespace == expected_namespace and incident.workload_name == name:
+        return True
+    if incident.namespace == expected_namespace and incident.resource_name == name:
+        return True
+    return False
+
+async def incidents_for_resource(
+    cluster_id: UUID,
+    user: User,
+    session: AsyncSession,
+    kind: str,
+    namespace: str,
+    name: str,
+) -> list[AIIncident]:
+    await resource_detail(cluster_id, kind, namespace, name, user, session)
+    key = normalize_resource_key(kind)
+    expected_namespace = None if namespace == "_cluster" else namespace
+    snapshot = await latest_snapshot_payload(cluster_id, session)
+    target_pods = related_pod_refs(snapshot, key, expected_namespace, name)
+
+    incidents = (
+        await session.execute(
+            select(AIIncident)
+            .where(
+                AIIncident.cluster_id == cluster_id,
+                AIIncident.organization_id == user.organization_id,
+            )
+            .order_by(AIIncident.last_seen_at.desc(), AIIncident.created_at.desc())
+        )
+    ).scalars().all()
+
+    return [
+        incident
+        for incident in incidents
+        if incident_matches_resource(incident, key, expected_namespace, name, target_pods)
+    ]
+
+
+async def cluster_incident_rows(cluster_id: UUID, user: User, session: AsyncSession) -> list[AIIncident]:
+    await get_cluster(cluster_id, user, session)
+    return (
+        await session.execute(
+            select(AIIncident)
+            .where(
+                AIIncident.cluster_id == cluster_id,
+                AIIncident.organization_id == user.organization_id,
+            )
+            .order_by(AIIncident.last_seen_at.desc(), AIIncident.created_at.desc())
+            .limit(500)
+        )
+    ).scalars().all()
+
 @router.get("/{clusterId}/resources/{kind}/{namespace}/{name}/logs", response_model=list[ResourceLogEntry])
 async def resource_logs(clusterId: UUID, kind: str, namespace: str, name: str, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     await resource_detail(clusterId, kind, namespace, name, user, session)
@@ -357,3 +425,142 @@ async def resource_logs(clusterId: UUID, kind: str, namespace: str, name: str, u
                 if len(entries) >= 1000:
                     return entries
     return entries
+
+@router.get("/{clusterId}/resources/{kind}/{namespace}/{name}/incidents", response_model=list[AIIncidentResponse])
+async def resource_incidents(clusterId: UUID, kind: str, namespace: str, name: str, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    return await incidents_for_resource(clusterId, user, session, kind, namespace, name)
+
+
+@router.get("/{clusterId}/incidents", response_model=list[AIIncidentResponse])
+async def cluster_incidents(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    return await cluster_incident_rows(clusterId, user, session)
+
+
+@router.post("/{clusterId}/ai/query", response_model=AIClusterQueryResponse)
+async def cluster_ai_query(clusterId: UUID, body: AIClusterQueryRequest, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    if not settings.ai_cluster_query_enabled:
+        raise HTTPException(status_code=403, detail="Cluster AI queries are disabled in this environment")
+    cluster = await get_cluster(clusterId, user, session)
+    query = await cluster_query_service.run(session=session, cluster=cluster, user=user, question=body.question)
+    await write_audit(
+        session,
+        "cluster.ai_query.requested",
+        "user",
+        user.organization_id,
+        user.id,
+        cluster.id,
+        details={"query_id": str(query.id), "intent": (query.parsed_query or {}).get("intent")},
+    )
+    await session.commit()
+    return query
+
+@router.get("/{clusterId}/resources/{kind}/{namespace}/{name}/ai-suggestions", response_model=list[ResourceAISuggestionResponse])
+async def resource_ai_suggestions(clusterId: UUID, kind: str, namespace: str, name: str, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    incidents = await incidents_for_resource(clusterId, user, session, kind, namespace, name)
+    if not incidents:
+        return []
+
+    incident_ids = [incident.id for incident in incidents]
+    incident_map = {incident.id: incident for incident in incidents}
+    rows = (
+        await session.execute(
+            select(RemediationSuggestion)
+            .where(
+                RemediationSuggestion.cluster_id == clusterId,
+                RemediationSuggestion.organization_id == user.organization_id,
+                RemediationSuggestion.incident_id.in_(incident_ids),
+            )
+            .order_by(RemediationSuggestion.updated_at.desc(), RemediationSuggestion.created_at.desc())
+        )
+    ).scalars().all()
+    suggestion_ids = [suggestion.id for suggestion in rows]
+    if not suggestion_ids:
+        return []
+    approval_rows = (
+        await session.execute(
+            select(RemediationApproval)
+            .where(
+                RemediationApproval.cluster_id == clusterId,
+                RemediationApproval.organization_id == user.organization_id,
+                RemediationApproval.suggestion_id.in_(suggestion_ids),
+            )
+        )
+    ).scalars().all()
+    action_rows = (
+        await session.execute(
+            select(RemediationAction)
+            .where(
+                RemediationAction.cluster_id == clusterId,
+                RemediationAction.organization_id == user.organization_id,
+                RemediationAction.suggestion_id.in_(suggestion_ids),
+            )
+        )
+    ).scalars().all()
+    latest_approvals: dict[UUID, RemediationApproval] = {}
+    for approval in approval_rows:
+        current = latest_approvals.get(approval.suggestion_id)
+        if current is None or approval.created_at >= current.created_at:
+            latest_approvals[approval.suggestion_id] = approval
+    latest_actions: dict[UUID, RemediationAction] = {}
+    for action in action_rows:
+        current = latest_actions.get(action.suggestion_id)
+        if current is None or action.requested_at >= current.requested_at:
+            latest_actions[action.suggestion_id] = action
+
+    response: list[ResourceAISuggestionResponse] = []
+    for suggestion in rows:
+        incident = incident_map.get(suggestion.incident_id)
+        if not incident:
+            continue
+        latest_approval = latest_approvals.get(suggestion.id)
+        latest_action = latest_actions.get(suggestion.id)
+        approval_available = False
+        approval_block_reason: str | None = None
+        if suggestion.suggestion_type == "rollout_restart":
+            if latest_action and latest_action.status in {"queued", "picked_up", "running", "succeeded"}:
+                approval_block_reason = f"Action already {latest_action.status.replace('_', ' ')}"
+            elif not settings.remediation_approval_enabled:
+                approval_block_reason = "Remediation approvals are disabled"
+            elif not settings.agent_remediation_enabled:
+                approval_block_reason = "Agent remediation is disabled in this environment"
+            elif not suggestion.requires_approval:
+                approval_block_reason = "This suggestion is not configured for approvals"
+            elif not suggestion.is_executable or suggestion.executable_action_type != "rollout_restart":
+                approval_block_reason = "This suggestion is advisory only and cannot be executed yet"
+            else:
+                payload = suggestion.action_payload if isinstance(suggestion.action_payload, dict) else {}
+                if payload.get("workload_kind") != "Deployment" or not payload.get("workload_name") or not payload.get("namespace"):
+                    approval_block_reason = "The deployment target for this restart is incomplete"
+                else:
+                    approval_available = True
+        response.append(
+            ResourceAISuggestionResponse(
+                id=suggestion.id,
+                cluster_id=suggestion.cluster_id,
+                incident_id=suggestion.incident_id,
+                incident_title=incident.title,
+                incident_severity=incident.severity,
+                incident_status=incident.status,
+                resource_kind=suggestion.resource_kind,
+                resource_name=suggestion.resource_name,
+                suggestion_type=suggestion.suggestion_type,
+                title=suggestion.title,
+                summary=suggestion.summary,
+                risk_level=suggestion.risk_level,
+                requires_approval=suggestion.requires_approval,
+                is_executable=suggestion.is_executable,
+                executable_action_type=suggestion.executable_action_type,
+                action_payload=suggestion.action_payload,
+                ai_model=suggestion.ai_model,
+                prompt_version=suggestion.prompt_version,
+                confidence_score=suggestion.confidence_score,
+                latest_approval_status=latest_approval.approval_status if latest_approval else None,
+                latest_action_id=latest_action.id if latest_action else None,
+                latest_action_status=latest_action.status if latest_action else None,
+                approval_available=approval_available,
+                approval_block_reason=approval_block_reason,
+                created_at=suggestion.created_at,
+                updated_at=suggestion.updated_at,
+            )
+        )
+    return response
