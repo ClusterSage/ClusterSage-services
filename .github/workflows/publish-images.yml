@@ -14,6 +14,11 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -30,19 +35,27 @@ jobs:
             context: services/collector-agent
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Azure workflow configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${AZURE_CLIENT_ID}" ] || { echo "Missing AZURE_CLIENT_ID. Add it as an org/repo secret or variable."; exit 1; }
+          [ -n "${AZURE_TENANT_ID}" ] || { echo "Missing AZURE_TENANT_ID. Add it as an org/repo secret or variable."; exit 1; }
+          [ -n "${AZURE_SUBSCRIPTION_ID}" ] || { echo "Missing AZURE_SUBSCRIPTION_ID. Add it as an org/repo secret or variable."; exit 1; }
+          [ -n "${{ vars.ACR_NAME }}" ] || { echo "Missing ACR_NAME variable."; exit 1; }
       - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
       - name: ACR login
-        run: az acr login --name "${{ secrets.ACR_NAME }}"
+        run: az acr login --name "${{ vars.ACR_NAME }}"
       - name: Build and push
         shell: bash
         run: |
           set -euo pipefail
-          LOGIN_SERVER="$(az acr show --name "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)"
-          SHA_TAG="sha-${GITHUB_SHA::12}"
+          LOGIN_SERVER="$(az acr show --name "${{ vars.ACR_NAME }}" --query loginServer -o tsv)"
+          SHA_TAG="sha-${GITHUB_SHA::7}"
           INPUT_TAG="${{ inputs.image_tag }}"
           docker build -t "$LOGIN_SERVER/${{ matrix.image }}:$SHA_TAG" "${{ matrix.context }}"
           docker push "$LOGIN_SERVER/${{ matrix.image }}:$SHA_TAG"
