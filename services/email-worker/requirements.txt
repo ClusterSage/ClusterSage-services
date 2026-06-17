@@ -1,0 +1,5 @@
+pydantic==2.10.4
+pydantic-settings==2.7.1
+azure-communication-email==1.0.0
+azure-identity==1.19.0
+azure-servicebus==7.14.3

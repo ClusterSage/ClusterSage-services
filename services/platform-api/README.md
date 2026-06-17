@@ -13,7 +13,6 @@ FastAPI service for ClusterSage.
 - Blob storage reads/writes.
 - Service Bus notification publishing.
 - Alembic migrations and PostgreSQL metadata models.
-- Email worker code until that runtime is split.
 
 ## Entrypoints
 
@@ -21,12 +20,6 @@ API:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Email worker:
-
-```bash
-python -m app.workers.email_worker
 ```
 
 ## Setup

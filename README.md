@@ -4,8 +4,8 @@ Service-oriented source tree for ClusterSage.
 
 ## Services
 
-- `services/platform-api`: FastAPI API, DB migrations, ingestion, storage, notification publishing, issue detection, and email worker code.
-- `services/email-worker`: logical service boundary. Runtime code currently remains in `platform-api/app/workers` and uses the platform API image.
+- `services/platform-api`: FastAPI API, DB migrations, ingestion, storage, notification publishing, and issue detection.
+- `services/email-worker`: standalone cluster-connected email worker.
 - `services/collector-agent`: customer-installed collector service.
 
 ## Shared Libraries
@@ -16,6 +16,9 @@ Service-oriented source tree for ClusterSage.
 
 ```bash
 cd services/platform-api
+python -m compileall app
+
+cd ../email-worker
 python -m compileall app
 
 cd ../collector-agent

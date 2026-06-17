@@ -17,6 +17,7 @@ jobs:
       matrix:
         service:
           - platform-api
+          - email-worker
           - collector-agent
     defaults:
       run:
@@ -38,6 +39,8 @@ jobs:
         include:
           - image: clustersage-backend
             context: services/platform-api
+          - image: clustersage-email-worker
+            context: services/email-worker
           - image: clustersage-agent
             context: services/collector-agent
     steps:
