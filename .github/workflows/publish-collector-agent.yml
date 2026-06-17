@@ -73,6 +73,9 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Enable anonymous pull on ACR
+        run: az acr update --name "${{ vars.ACR_NAME }}" --anonymous-pull-enabled true
+
       - name: Log in to Azure Container Registry
         run: az acr login --name "${{ vars.ACR_NAME }}"
 
@@ -91,6 +94,7 @@ jobs:
           images: ${{ env.IMAGE_REPOSITORY }}
           tags: |
             type=raw,value=${{ env.SHORT_SHA }}
+            type=raw,value=stable,enable=${{ github.ref == 'refs/heads/main' }}
           labels: |
             org.opencontainers.image.title=ClusterSage Collector Agent
             org.opencontainers.image.description=ClusterSage collector agent container image
@@ -112,3 +116,4 @@ jobs:
       - name: Show published image
         run: |
           echo "${{ env.IMAGE_REPOSITORY }}:${{ env.SHORT_SHA }}"
+          echo "${{ env.IMAGE_REPOSITORY }}:stable"
