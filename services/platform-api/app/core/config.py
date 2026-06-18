@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     ai_cluster_query_enabled: bool = False
     alert_evaluation_enabled: bool = False
     alert_evaluation_interval_seconds: int = 60
+    metrics_ingestion_enabled: bool = True
+    metrics_retention_hours: int = 72
     remediation_approval_enabled: bool = True
     agent_remediation_enabled: bool = False
     ai_max_log_lines_per_analysis: int = 200

@@ -9,8 +9,8 @@ from app.auth.dependencies import get_current_agent
 from app.core.config import settings
 from app.db.session import get_session
 from app.issues.detection import detect_from_events, detect_from_snapshot
-from app.models.entities import Cluster, ClusterSnapshot, LogBatch
-from app.schemas.api import EventsIngestRequest, LogsIngestRequest, SnapshotIngestRequest
+from app.models.entities import Cluster, ClusterMetricSample, ClusterSnapshot, LogBatch
+from app.schemas.api import EventsIngestRequest, LogsIngestRequest, MetricsIngestRequest, SnapshotIngestRequest
 from app.storage.blob import BlobWriter
 
 router = APIRouter(tags=["ingestion"])
@@ -77,3 +77,41 @@ async def ingest_snapshot(request: Request, cluster: Cluster = Depends(get_curre
     await write_audit(session, "snapshot.ingested", "agent", cluster.organization_id, cluster_id=cluster.id, details={"blob_path": blob_path, "size_bytes": size})
     await session.commit()
     return {"ok": True, "blob_path": blob_path}
+
+@router.post("/api/ingest/metrics")
+async def ingest_metrics(request: Request, cluster: Cluster = Depends(get_current_agent), session: AsyncSession = Depends(get_session)):
+    if not settings.metrics_ingestion_enabled:
+        raise HTTPException(status_code=403, detail="Metrics ingestion is disabled in this environment")
+    payload = MetricsIngestRequest.model_validate(await parse_payload(request))
+    session.add_all(
+        [
+            ClusterMetricSample(
+                organization_id=cluster.organization_id,
+                cluster_id=cluster.id,
+                scope=sample.scope,
+                namespace=sample.namespace,
+                resource_kind=sample.resource_kind,
+                resource_name=sample.resource_name,
+                container_name=sample.container_name,
+                node_name=sample.node_name,
+                metric_name=sample.metric_name,
+                unit=sample.unit,
+                value=sample.value,
+                collected_at=payload.collected_at,
+            )
+            for sample in payload.samples
+        ]
+    )
+    await write_audit(
+        session,
+        "metrics.ingested",
+        "agent",
+        cluster.organization_id,
+        cluster_id=cluster.id,
+        details={
+            "sample_count": len(payload.samples),
+            "collected_at": payload.collected_at.isoformat(),
+        },
+    )
+    await session.commit()
+    return {"ok": True, "sample_count": len(payload.samples), "collected_at": payload.collected_at.isoformat()}

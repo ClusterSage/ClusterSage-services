@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     clusterwatch_agent_version: str = "0.1.0"
     clusterwatch_heartbeat_interval_seconds: int = 30
     clusterwatch_snapshot_interval_seconds: int = 60
+    clusterwatch_metrics_enabled: bool = True
+    clusterwatch_metrics_interval_seconds: int = 60
     clusterwatch_remediation_enabled: bool = False
     clusterwatch_remediation_cluster_wide: bool = False
     clusterwatch_remediation_allowed_namespaces: str = ""

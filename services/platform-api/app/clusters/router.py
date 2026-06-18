@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.cluster_query import ClusterQueryService
@@ -9,8 +9,9 @@ from app.audit.service import write_audit
 from app.auth.dependencies import get_current_user
 from app.db.session import get_session
 from app.core.config import settings
-from app.models.entities import AIIncident, Cluster, ClusterSnapshot, Issue, LogBatch, RemediationAction, RemediationApproval, RemediationSuggestion, User
-from app.schemas.api import AIClusterQueryRequest, AIClusterQueryResponse, AIIncidentResponse, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
+from app.metrics import build_metrics_overview
+from app.models.entities import AIIncident, Cluster, ClusterMetricSample, ClusterSnapshot, Issue, LogBatch, RemediationAction, RemediationApproval, RemediationSuggestion, User
+from app.schemas.api import AIClusterQueryRequest, AIClusterQueryResponse, AIIncidentResponse, ClusterMetricsOverviewResponse, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
 from app.storage.blob import BlobReader
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
@@ -64,10 +65,19 @@ async def cluster_detail(clusterId: UUID, user: User = Depends(get_current_user)
     return await get_cluster(clusterId, user, session)
 
 @router.delete("/{clusterId}", status_code=204)
-async def deactivate_cluster(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+async def delete_cluster(clusterId: UUID, request: Request, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     cluster = await get_cluster(clusterId, user, session)
-    cluster.status = "deactivated"
-    await write_audit(session, "cluster.deactivated", "user", user.organization_id, user.id, cluster.id, {"cluster_name": cluster.name})
+    await write_audit(
+        session,
+        "cluster.deleted",
+        "user",
+        user.organization_id,
+        user.id,
+        cluster.id,
+        {"cluster_name": cluster.name, "provider": cluster.provider},
+        ip_address=request.client.host if request.client else None,
+    )
+    await session.delete(cluster)
     await session.commit()
     return None
 
@@ -192,6 +202,34 @@ async def cluster_resources(clusterId: UUID, kind: str | None = None, user: User
             if summary:
                 resources.append(summary)
     return sorted(resources, key=lambda item: (item.kind, item.namespace or "", item.name))
+
+@router.get("/{clusterId}/metrics/overview", response_model=ClusterMetricsOverviewResponse)
+async def cluster_metrics_overview(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    await get_cluster(clusterId, user, session)
+    latest_collected_at = (
+        await session.execute(
+            select(ClusterMetricSample.collected_at)
+            .where(
+                ClusterMetricSample.cluster_id == clusterId,
+                ClusterMetricSample.organization_id == user.organization_id,
+            )
+            .order_by(ClusterMetricSample.collected_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if latest_collected_at is None:
+        return ClusterMetricsOverviewResponse()
+    samples = (
+        await session.execute(
+            select(ClusterMetricSample)
+            .where(
+                ClusterMetricSample.cluster_id == clusterId,
+                ClusterMetricSample.organization_id == user.organization_id,
+                ClusterMetricSample.collected_at == latest_collected_at,
+            )
+        )
+    ).scalars().all()
+    return build_metrics_overview(samples, latest_collected_at)
 
 @router.get("/{clusterId}/resources/{kind}/{namespace}/{name}", response_model=ResourceSummary)
 async def resource_detail(clusterId: UUID, kind: str, namespace: str, name: str, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):

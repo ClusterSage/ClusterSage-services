@@ -240,6 +240,23 @@ class AlertEvent(Base):
     notification_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+class ClusterMetricSample(Base):
+    __tablename__ = "cluster_metric_samples"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    scope: Mapped[str] = mapped_column(Text, nullable=False)
+    namespace: Mapped[str | None] = mapped_column(Text)
+    resource_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    resource_name: Mapped[str] = mapped_column(Text, nullable=False)
+    container_name: Mapped[str | None] = mapped_column(Text)
+    node_name: Mapped[str | None] = mapped_column(Text)
+    metric_name: Mapped[str] = mapped_column(Text, nullable=False)
+    unit: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

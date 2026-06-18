@@ -79,6 +79,21 @@ class SnapshotIngestRequest(BaseModel):
     snapshot_type: str = "full"
     snapshot: dict[str, Any]
 
+class MetricSampleIngestRecord(BaseModel):
+    scope: str = Field(pattern="^(pod|node)$")
+    namespace: str | None = None
+    resource_kind: str = Field(min_length=1, max_length=50)
+    resource_name: str = Field(min_length=1, max_length=255)
+    container_name: str | None = Field(default=None, max_length=255)
+    node_name: str | None = Field(default=None, max_length=255)
+    metric_name: str = Field(pattern="^(cpu_mcores|memory_bytes)$")
+    unit: str = Field(pattern="^(mcores|bytes)$")
+    value: float = Field(ge=0)
+
+class MetricsIngestRequest(BaseModel):
+    collected_at: datetime
+    samples: list[MetricSampleIngestRecord] = Field(default_factory=list)
+
 class ClusterResponse(BaseModel):
     id: UUID
     name: str
@@ -375,3 +390,36 @@ class AlertEventResponse(BaseModel):
     notification_error: str | None = None
     created_at: datetime
     model_config = {"from_attributes": True}
+
+class ClusterMetricSampleResponse(BaseModel):
+    id: UUID
+    cluster_id: UUID
+    scope: str
+    namespace: str | None = None
+    resource_kind: str
+    resource_name: str
+    container_name: str | None = None
+    node_name: str | None = None
+    metric_name: str
+    unit: str
+    value: float
+    collected_at: datetime
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+class ClusterMetricRollupItem(BaseModel):
+    label: str
+    namespace: str | None = None
+    value: float
+    unit: str
+
+class ClusterMetricsOverviewResponse(BaseModel):
+    collected_at: datetime | None = None
+    pod_cpu_mcores_total: float = 0
+    pod_memory_bytes_total: float = 0
+    node_cpu_mcores_total: float = 0
+    node_memory_bytes_total: float = 0
+    top_pods_by_cpu: list[ClusterMetricRollupItem] = Field(default_factory=list)
+    top_pods_by_memory: list[ClusterMetricRollupItem] = Field(default_factory=list)
+    top_nodes_by_cpu: list[ClusterMetricRollupItem] = Field(default_factory=list)
+    top_nodes_by_memory: list[ClusterMetricRollupItem] = Field(default_factory=list)

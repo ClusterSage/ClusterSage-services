@@ -7,6 +7,7 @@ from app.config import settings
 from app.heartbeat import heartbeat_loop
 from app.kubernetes_client import snapshot_loop
 from app.log_receiver import flush_loop, router as log_router
+from app.metrics import metrics_loop
 from app.models import AgentState
 from app.registration import register
 
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     tasks = [
         asyncio.create_task(heartbeat_loop(state)),
         asyncio.create_task(snapshot_loop(state)),
+        asyncio.create_task(metrics_loop(state)),
         asyncio.create_task(flush_loop(state)),
         asyncio.create_task(action_loop(state)),
     ]
