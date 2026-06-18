@@ -80,14 +80,14 @@ class SnapshotIngestRequest(BaseModel):
     snapshot: dict[str, Any]
 
 class MetricSampleIngestRecord(BaseModel):
-    scope: str = Field(pattern="^(pod|node)$")
+    scope: str = Field(pattern="^(cluster|namespace|workload|pod|node)$")
     namespace: str | None = None
     resource_kind: str = Field(min_length=1, max_length=50)
     resource_name: str = Field(min_length=1, max_length=255)
     container_name: str | None = Field(default=None, max_length=255)
     node_name: str | None = Field(default=None, max_length=255)
-    metric_name: str = Field(pattern="^(cpu_mcores|memory_bytes)$")
-    unit: str = Field(pattern="^(mcores|bytes)$")
+    metric_name: str = Field(pattern="^[a-z0-9_]+$", min_length=1, max_length=100)
+    unit: str = Field(pattern="^[a-z0-9_]+$", min_length=1, max_length=40)
     value: float = Field(ge=0)
 
 class MetricsIngestRequest(BaseModel):
@@ -412,6 +412,61 @@ class ClusterMetricRollupItem(BaseModel):
     namespace: str | None = None
     value: float
     unit: str
+
+
+class ClusterMetricFilterCatalogResponse(BaseModel):
+    collected_at: datetime | None = None
+    metric_names: list[str] = Field(default_factory=list)
+    scopes: list[str] = Field(default_factory=list)
+    resource_kinds: list[str] = Field(default_factory=list)
+    namespaces: list[str] = Field(default_factory=list)
+    nodes: list[str] = Field(default_factory=list)
+    workloads: list[str] = Field(default_factory=list)
+    pods: list[str] = Field(default_factory=list)
+
+
+class ClusterMetricLatestBreakdownItem(BaseModel):
+    scope: str
+    resource_kind: str
+    resource_name: str
+    namespace: str | None = None
+    node_name: str | None = None
+    container_name: str | None = None
+    value: float
+    unit: str
+
+
+class ClusterMetricLatestResponse(BaseModel):
+    collected_at: datetime | None = None
+    metric_name: str
+    unit: str | None = None
+    total_value: float = 0
+    breakdown: list[ClusterMetricLatestBreakdownItem] = Field(default_factory=list)
+
+
+class ClusterMetricTimeseriesPoint(BaseModel):
+    timestamp: datetime
+    value: float
+
+
+class ClusterMetricTimeseriesSeries(BaseModel):
+    scope: str
+    resource_kind: str
+    resource_name: str
+    namespace: str | None = None
+    node_name: str | None = None
+    container_name: str | None = None
+    unit: str
+    latest_value: float = 0
+    points: list[ClusterMetricTimeseriesPoint] = Field(default_factory=list)
+
+
+class ClusterMetricTimeseriesResponse(BaseModel):
+    metric_name: str
+    unit: str | None = None
+    window_minutes: int
+    step_minutes: int
+    series: list[ClusterMetricTimeseriesSeries] = Field(default_factory=list)
 
 class ClusterMetricsOverviewResponse(BaseModel):
     collected_at: datetime | None = None

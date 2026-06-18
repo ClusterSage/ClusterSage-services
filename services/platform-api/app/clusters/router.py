@@ -9,9 +9,15 @@ from app.audit.service import write_audit
 from app.auth.dependencies import get_current_user
 from app.db.session import get_session
 from app.core.config import settings
-from app.metrics import build_metrics_overview
+from app.metrics import (
+    build_latest_metric_response,
+    build_metric_filter_catalog,
+    build_metric_timeseries_response,
+    build_metrics_overview,
+    metrics_window_start,
+)
 from app.models.entities import AIIncident, Cluster, ClusterMetricSample, ClusterSnapshot, Issue, LogBatch, RemediationAction, RemediationApproval, RemediationSuggestion, User
-from app.schemas.api import AIClusterQueryRequest, AIClusterQueryResponse, AIIncidentResponse, ClusterMetricsOverviewResponse, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
+from app.schemas.api import AIClusterQueryRequest, AIClusterQueryResponse, AIIncidentResponse, ClusterMetricFilterCatalogResponse, ClusterMetricLatestResponse, ClusterMetricsOverviewResponse, ClusterMetricTimeseriesResponse, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
 from app.storage.blob import BlobReader
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
@@ -203,33 +209,173 @@ async def cluster_resources(clusterId: UUID, kind: str | None = None, user: User
                 resources.append(summary)
     return sorted(resources, key=lambda item: (item.kind, item.namespace or "", item.name))
 
-@router.get("/{clusterId}/metrics/overview", response_model=ClusterMetricsOverviewResponse)
-async def cluster_metrics_overview(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
-    await get_cluster(clusterId, user, session)
-    latest_collected_at = (
+
+async def latest_metrics_timestamp(cluster_id: UUID, organization_id: UUID, session: AsyncSession) -> datetime | None:
+    return (
         await session.execute(
             select(ClusterMetricSample.collected_at)
             .where(
-                ClusterMetricSample.cluster_id == clusterId,
-                ClusterMetricSample.organization_id == user.organization_id,
+                ClusterMetricSample.cluster_id == cluster_id,
+                ClusterMetricSample.organization_id == organization_id,
             )
             .order_by(ClusterMetricSample.collected_at.desc())
             .limit(1)
         )
     ).scalars().first()
+
+
+def apply_metric_filters(
+    query,
+    *,
+    cluster_id: UUID,
+    organization_id: UUID,
+    metric_name: str | None = None,
+    scope: str | None = None,
+    namespace: str | None = None,
+    resource_kind: str | None = None,
+    resource_name: str | None = None,
+    node_name: str | None = None,
+    container_name: str | None = None,
+):
+    query = query.where(
+        ClusterMetricSample.cluster_id == cluster_id,
+        ClusterMetricSample.organization_id == organization_id,
+    )
+    if metric_name:
+        query = query.where(ClusterMetricSample.metric_name == metric_name)
+    if scope:
+        query = query.where(ClusterMetricSample.scope == scope)
+    if namespace:
+        query = query.where(ClusterMetricSample.namespace == namespace)
+    if resource_kind:
+        query = query.where(ClusterMetricSample.resource_kind == resource_kind)
+    if resource_name:
+        query = query.where(ClusterMetricSample.resource_name == resource_name)
+    if node_name:
+        query = query.where(ClusterMetricSample.node_name == node_name)
+    if container_name:
+        query = query.where(ClusterMetricSample.container_name == container_name)
+    return query
+
+@router.get("/{clusterId}/metrics/overview", response_model=ClusterMetricsOverviewResponse)
+async def cluster_metrics_overview(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    await get_cluster(clusterId, user, session)
+    latest_collected_at = await latest_metrics_timestamp(clusterId, user.organization_id, session)
     if latest_collected_at is None:
         return ClusterMetricsOverviewResponse()
     samples = (
         await session.execute(
-            select(ClusterMetricSample)
-            .where(
-                ClusterMetricSample.cluster_id == clusterId,
-                ClusterMetricSample.organization_id == user.organization_id,
-                ClusterMetricSample.collected_at == latest_collected_at,
-            )
+            apply_metric_filters(
+                select(ClusterMetricSample),
+                cluster_id=clusterId,
+                organization_id=user.organization_id,
+            ).where(ClusterMetricSample.collected_at == latest_collected_at)
         )
     ).scalars().all()
     return build_metrics_overview(samples, latest_collected_at)
+
+
+@router.get("/{clusterId}/metrics/catalog", response_model=ClusterMetricFilterCatalogResponse)
+async def cluster_metrics_catalog(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    await get_cluster(clusterId, user, session)
+    latest_collected_at = await latest_metrics_timestamp(clusterId, user.organization_id, session)
+    if latest_collected_at is None:
+        return ClusterMetricFilterCatalogResponse()
+    samples = (
+        await session.execute(
+            apply_metric_filters(
+                select(ClusterMetricSample),
+                cluster_id=clusterId,
+                organization_id=user.organization_id,
+            ).where(ClusterMetricSample.collected_at == latest_collected_at)
+        )
+    ).scalars().all()
+    return build_metric_filter_catalog(samples, latest_collected_at)
+
+
+@router.get("/{clusterId}/metrics/latest", response_model=ClusterMetricLatestResponse)
+async def cluster_metric_latest(
+    clusterId: UUID,
+    metric_name: str,
+    scope: str | None = None,
+    namespace: str | None = None,
+    resource_kind: str | None = None,
+    resource_name: str | None = None,
+    node_name: str | None = None,
+    container_name: str | None = None,
+    limit: int = 12,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await get_cluster(clusterId, user, session)
+    latest_collected_at = await latest_metrics_timestamp(clusterId, user.organization_id, session)
+    if latest_collected_at is None:
+        return ClusterMetricLatestResponse(metric_name=metric_name)
+    samples = (
+        await session.execute(
+            apply_metric_filters(
+                select(ClusterMetricSample),
+                cluster_id=clusterId,
+                organization_id=user.organization_id,
+                metric_name=metric_name,
+                scope=scope,
+                namespace=namespace,
+                resource_kind=resource_kind,
+                resource_name=resource_name,
+                node_name=node_name,
+                container_name=container_name,
+            ).where(ClusterMetricSample.collected_at == latest_collected_at)
+        )
+    ).scalars().all()
+    return build_latest_metric_response(samples, metric_name=metric_name, collected_at=latest_collected_at, limit=max(1, min(limit, 50)))
+
+
+@router.get("/{clusterId}/metrics/timeseries", response_model=ClusterMetricTimeseriesResponse)
+async def cluster_metric_timeseries(
+    clusterId: UUID,
+    metric_name: str,
+    scope: str | None = None,
+    namespace: str | None = None,
+    resource_kind: str | None = None,
+    resource_name: str | None = None,
+    node_name: str | None = None,
+    container_name: str | None = None,
+    window_minutes: int = 180,
+    step_minutes: int = 5,
+    limit: int = 8,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await get_cluster(clusterId, user, session)
+    window_minutes = max(5, min(window_minutes, 24 * 60))
+    step_minutes = max(1, min(step_minutes, 60))
+    limit = max(1, min(limit, 20))
+    window_start = metrics_window_start(datetime.now(timezone.utc), window_minutes)
+    samples = (
+        await session.execute(
+            apply_metric_filters(
+                select(ClusterMetricSample),
+                cluster_id=clusterId,
+                organization_id=user.organization_id,
+                metric_name=metric_name,
+                scope=scope,
+                namespace=namespace,
+                resource_kind=resource_kind,
+                resource_name=resource_name,
+                node_name=node_name,
+                container_name=container_name,
+            )
+            .where(ClusterMetricSample.collected_at >= window_start)
+            .order_by(ClusterMetricSample.collected_at.asc())
+        )
+    ).scalars().all()
+    return build_metric_timeseries_response(
+        samples,
+        metric_name=metric_name,
+        window_minutes=window_minutes,
+        step_minutes=step_minutes,
+        limit=limit,
+    )
 
 @router.get("/{clusterId}/resources/{kind}/{namespace}/{name}", response_model=ResourceSummary)
 async def resource_detail(clusterId: UUID, kind: str, namespace: str, name: str, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
