@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import json
 import logging
 import re
@@ -551,6 +552,21 @@ def summary_metric_samples(summary: dict[str, Any], node_name: str) -> list[dict
     return samples
 
 
+def parse_summary_payload(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                parsed = ast.literal_eval(raw)
+            except (ValueError, SyntaxError):
+                return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def collect_resource_usage_samples() -> list[dict[str, Any]]:
     if not settings.clusterwatch_metrics_resource_usage_enabled:
         return []
@@ -570,8 +586,8 @@ def collect_kubelet_summary_samples() -> list[dict[str, Any]]:
         if not node_name:
             continue
         raw = core_api.connect_get_node_proxy_with_path(node_name, "stats/summary")
-        summary = json.loads(raw) if isinstance(raw, str) else raw
-        if isinstance(summary, dict):
+        summary = parse_summary_payload(raw)
+        if summary is not None:
             samples.extend(summary_metric_samples(summary, node_name))
     return samples
 
