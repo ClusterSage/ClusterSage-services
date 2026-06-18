@@ -308,3 +308,70 @@ class AuditLogResponse(BaseModel):
     ip_address: str | None = None
     created_at: datetime
     model_config = {"from_attributes": True}
+
+class AlertLimitCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    metric_type: str = Field(min_length=1, max_length=100)
+    scope_type: str = Field(pattern="^(cluster|namespace|workload|resource)$")
+    namespace: str | None = Field(default=None, max_length=120)
+    workload_name: str | None = Field(default=None, max_length=200)
+    resource_id: str | None = Field(default=None, max_length=300)
+    operator: str = Field(pattern="^(gt|gte|lt|lte|eq)$")
+    threshold_value: float
+    time_window_minutes: int = Field(ge=1, le=1440)
+    severity: str = Field(pattern="^(minor|major|critical)$")
+    email_enabled: bool = True
+    notification_email: EmailStr | None = None
+    enabled: bool = True
+    cooldown_minutes: int = Field(ge=1, le=10080, default=30)
+
+class AlertLimitUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    metric_type: str | None = Field(default=None, min_length=1, max_length=100)
+    scope_type: str | None = Field(default=None, pattern="^(cluster|namespace|workload|resource)$")
+    namespace: str | None = Field(default=None, max_length=120)
+    workload_name: str | None = Field(default=None, max_length=200)
+    resource_id: str | None = Field(default=None, max_length=300)
+    operator: str | None = Field(default=None, pattern="^(gt|gte|lt|lte|eq)$")
+    threshold_value: float | None = None
+    time_window_minutes: int | None = Field(default=None, ge=1, le=1440)
+    severity: str | None = Field(default=None, pattern="^(minor|major|critical)$")
+    email_enabled: bool | None = None
+    notification_email: EmailStr | None = None
+    enabled: bool | None = None
+    cooldown_minutes: int | None = Field(default=None, ge=1, le=10080)
+
+class AlertLimitResponse(BaseModel):
+    id: UUID
+    cluster_id: UUID
+    created_by_user_id: UUID | None = None
+    name: str
+    metric_type: str
+    scope_type: str
+    namespace: str | None = None
+    workload_name: str | None = None
+    resource_id: str | None = None
+    operator: str
+    threshold_value: float
+    time_window_minutes: int
+    severity: str
+    email_enabled: bool
+    notification_email: EmailStr | None = None
+    enabled: bool
+    cooldown_minutes: int
+    last_triggered_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    model_config = {"from_attributes": True}
+
+class AlertEventResponse(BaseModel):
+    id: UUID
+    cluster_id: UUID
+    alert_limit_id: UUID
+    metric_value: float | None = None
+    threshold_value: float
+    triggered_at: datetime
+    notification_sent: bool
+    notification_error: str | None = None
+    created_at: datetime
+    model_config = {"from_attributes": True}

@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     azure_client_id: str = ""
     ai_analysis_enabled: bool = False
     ai_cluster_query_enabled: bool = False
+    alert_evaluation_enabled: bool = False
+    alert_evaluation_interval_seconds: int = 60
     remediation_approval_enabled: bool = True
     agent_remediation_enabled: bool = False
     ai_max_log_lines_per_analysis: int = 200

@@ -205,6 +205,41 @@ class AIClusterQuery(Base):
     ai_model: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+class AlertLimit(Base, TimestampMixin):
+    __tablename__ = "alert_limits"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_type: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_type: Mapped[str] = mapped_column(Text, nullable=False, default="cluster")
+    namespace: Mapped[str | None] = mapped_column(Text)
+    workload_name: Mapped[str | None] = mapped_column(Text)
+    resource_id: Mapped[str | None] = mapped_column(Text)
+    operator: Mapped[str] = mapped_column(Text, nullable=False)
+    threshold_value: Mapped[float] = mapped_column(Float, nullable=False)
+    time_window_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    severity: Mapped[str] = mapped_column(Text, nullable=False, default="major")
+    email_enabled: Mapped[bool] = mapped_column(default=True)
+    notification_email: Mapped[str | None] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    cooldown_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+class AlertEvent(Base):
+    __tablename__ = "alert_events"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    cluster_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
+    alert_limit_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("alert_limits.id", ondelete="CASCADE"), index=True)
+    metric_value: Mapped[float | None] = mapped_column(Float)
+    threshold_value: Mapped[float] = mapped_column(Float, nullable=False)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    notification_sent: Mapped[bool] = mapped_column(default=False)
+    notification_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

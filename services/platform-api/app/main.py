@@ -1,5 +1,10 @@
+import asyncio
+import contextlib
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.alerts.loop import alert_evaluation_loop
+from app.alerts.router import router as alerts_router
 from app.agent_keys.router import router as agent_keys_router
 from app.agents.router import router as agents_router
 from app.audit.router import router as audit_router
@@ -18,6 +23,21 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.log_batch_max_size_mb * 1024 * 1024)
 app.add_middleware(RateLimitMiddleware, requests_per_minute=600)
 
+
+@app.on_event("startup")
+async def start_alert_evaluator() -> None:
+    if settings.alert_evaluation_enabled:
+        app.state.alert_evaluation_task = asyncio.create_task(alert_evaluation_loop())
+
+
+@app.on_event("shutdown")
+async def stop_alert_evaluator() -> None:
+    task = getattr(app.state, "alert_evaluation_task", None)
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": settings.app_name}
@@ -27,5 +47,6 @@ app.include_router(agent_keys_router)
 app.include_router(agents_router)
 app.include_router(ingestion_router)
 app.include_router(clusters_router)
+app.include_router(alerts_router)
 app.include_router(audit_router)
 app.include_router(remediation_router)

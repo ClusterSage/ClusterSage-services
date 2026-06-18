@@ -1,12 +1,13 @@
 # Email Worker
 
-Standalone service for the cluster-connected email worker.
+Standalone service for ClusterSage notification email delivery.
 
 ## Owns
 
-- Consuming cluster-connected messages from Azure Service Bus.
+- Consuming notification messages from Azure Service Bus.
 - Sending Azure Communication Services Email notifications.
-- Ensuring email failures do not break cluster connection.
+- Handling cluster-connected emails and alert-threshold emails.
+- Ensuring email failures do not break cluster connection or alert evaluation.
 
 ## Entrypoint
 

@@ -14,7 +14,7 @@ permissions:
   id-token: write
 
 env:
-  IMAGE_REPOSITORY: ${{ vars.ACR_LOGIN_SERVER }}/${{ vars.ACR_EMAIL_WORKER_REPOSITORY != '' && vars.ACR_EMAIL_WORKER_REPOSITORY || 'clustersage-email-worker' }}
+  IMAGE_REPOSITORY: ${{ vars.ACR_LOGIN_SERVER }}/${{ vars.ACR_EMAIL_WORKER_REPOSITORY != '' && vars.ACR_EMAIL_WORKER_REPOSITORY || 'clustersage/email-worker' }}
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
