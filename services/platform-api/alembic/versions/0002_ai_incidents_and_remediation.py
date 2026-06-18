@@ -1,6 +1,6 @@
 """add ai incidents and remediation schema
 
-Revision ID: 0002_ai_incidents_and_remediation
+Revision ID: 0002_ai_incidents_remediation
 Revises: 0001_initial
 Create Date: 2026-06-18
 """
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "0002_ai_incidents_and_remediation"
+revision = "0002_ai_incidents_remediation"
 down_revision = "0001_initial"
 branch_labels = None
 depends_on = None
