@@ -1,4 +1,4 @@
-name: Email Worker CI and Publish
+name: Email Worker Build and Promote Dev
 
 on:
   push:
@@ -19,7 +19,7 @@ env:
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
   GITOPS_REPOSITORY: ClusterSage/ClusterSage-gitops
-  GITOPS_VALUES_FILE: environments/prod/values/clustersage-values.yaml
+  GITOPS_VALUES_FILE: environments/dev/values/clustersage-values.yaml
 
 jobs:
   validate:
@@ -101,6 +101,7 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Build and push email worker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: ./services/email-worker
@@ -115,6 +116,7 @@ jobs:
       - name: Show published image
         run: |
           echo "${{ env.IMAGE_REPOSITORY }}:${{ steps.vars.outputs.short_sha }}"
+          echo "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
 
       - name: Validate GitOps promotion configuration
         shell: bash
@@ -143,13 +145,18 @@ jobs:
           set -euo pipefail
           cd gitops
           export SHORT_SHA="${{ steps.vars.outputs.short_sha }}"
+          export IMAGE_REPOSITORY="${{ env.IMAGE_REPOSITORY }}"
+          export IMAGE_DIGEST="${{ steps.build.outputs.digest }}"
+          [[ "${IMAGE_DIGEST}" == sha256:* ]] || { echo "Invalid image digest: ${IMAGE_DIGEST}"; exit 1; }
+          yq -i '.emailWorker.image.repository = strenv(IMAGE_REPOSITORY)' "${GITOPS_VALUES_FILE}"
           yq -i '.emailWorker.image.tag = env(SHORT_SHA)' "${GITOPS_VALUES_FILE}"
+          yq -i '.emailWorker.image.digest = strenv(IMAGE_DIGEST)' "${GITOPS_VALUES_FILE}"
           if git diff --quiet -- "${GITOPS_VALUES_FILE}"; then
             echo "No GitOps change required."
             exit 0
           fi
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${GITOPS_VALUES_FILE}"
-          git commit -m "Promote email worker image to ${SHORT_SHA}"
+          git commit -m "chore(dev): deploy email worker image ${SHORT_SHA}"
           git push origin HEAD:main

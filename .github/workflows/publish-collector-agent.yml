@@ -1,4 +1,4 @@
-name: Collector Agent CI and Publish
+name: Collector Agent Publish
 
 on:
   push:
@@ -100,6 +100,7 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Build and push collector agent image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: ./services/collector-agent
@@ -114,4 +115,5 @@ jobs:
       - name: Show published image
         run: |
           echo "${{ env.IMAGE_REPOSITORY }}:${{ steps.vars.outputs.short_sha }}"
+          echo "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
           echo "${{ env.IMAGE_REPOSITORY }}:stable"
