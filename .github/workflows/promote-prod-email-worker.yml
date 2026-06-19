@@ -16,7 +16,6 @@ permissions:
 env:
   ACR_NAME: ${{ vars.ACR_NAME }}
   ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
-  ACR_SUBSCRIPTION_ID_VALUE: ${{ vars.ACR_SUBSCRIPTION_ID != '' && vars.ACR_SUBSCRIPTION_ID || secrets.ACR_SUBSCRIPTION_ID != '' && secrets.ACR_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
   GITOPS_REPOSITORY: ClusterSage/ClusterSage-gitops
   SOURCE_VALUES_FILE: environments/staging/values/clustersage-values.yaml
   TARGET_VALUES_FILE: environments/prod/values/clustersage-values.yaml
@@ -54,10 +53,6 @@ jobs:
           fi
           if [[ -z "$ACR_NAME" || -z "$ACR_LOGIN_SERVER" ]]; then
             echo "Missing ACR_NAME or ACR_LOGIN_SERVER. Set them as GitHub variables."
-            exit 1
-          fi
-          if [[ -z "$ACR_SUBSCRIPTION_ID_VALUE" ]]; then
-            echo "Missing ACR_SUBSCRIPTION_ID or AZURE_SUBSCRIPTION_ID. Set one as a GitHub variable or secret."
             exit 1
           fi
         shell: bash
@@ -119,7 +114,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.source.outputs.image_digest }}
           RELEASE_VERSION: ${{ github.event.inputs.release_version }}
         run: |
-          az account set --subscription "$ACR_SUBSCRIPTION_ID_VALUE"
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID_VALUE"
 
           IMAGE_PATH="${IMAGE_REPOSITORY#${ACR_LOGIN_SERVER}/}"
           if [[ "$IMAGE_PATH" == "$IMAGE_REPOSITORY" || -z "$IMAGE_PATH" ]]; then
