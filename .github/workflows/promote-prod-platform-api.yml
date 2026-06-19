@@ -9,8 +9,8 @@ on:
         type: string
 
 permissions:
-  contents: read
   id-token: write
+  contents: read
   pull-requests: write
 
 env:
@@ -31,38 +31,12 @@ jobs:
     steps:
       - name: Validate release version
         run: |
-          if [[ ! "${{ github.event.inputs.release_version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid release_version. Expected format: vMAJOR.MINOR.PATCH"
+          RELEASE_VERSION="${{ github.event.inputs.release_version }}"
+          if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release version. Use format vMAJOR.MINOR.PATCH, example v1.0.0"
             exit 1
           fi
         shell: bash
-
-      - name: Validate Azure OIDC inputs
-        run: |
-          if [[ -z "$AZURE_CLIENT_ID_VALUE" ]]; then
-            echo "Missing AZURE_CLIENT_ID. Set it as a GitHub variable or secret."
-            exit 1
-          fi
-          if [[ -z "$AZURE_TENANT_ID_VALUE" ]]; then
-            echo "Missing AZURE_TENANT_ID. Set it as a GitHub variable or secret."
-            exit 1
-          fi
-          if [[ -z "$AZURE_SUBSCRIPTION_ID_VALUE" ]]; then
-            echo "Missing AZURE_SUBSCRIPTION_ID. Set it as a GitHub variable or secret."
-            exit 1
-          fi
-          if [[ -z "$ACR_NAME" || -z "$ACR_LOGIN_SERVER" ]]; then
-            echo "Missing ACR_NAME or ACR_LOGIN_SERVER. Set them as GitHub variables."
-            exit 1
-          fi
-        shell: bash
-
-      - name: Log in to Azure using GitHub OIDC
-        uses: azure/login@v2
-        with:
-          client-id: ${{ env.AZURE_CLIENT_ID_VALUE }}
-          tenant-id: ${{ env.AZURE_TENANT_ID_VALUE }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID_VALUE }}
 
       - name: Install yq
         run: |
@@ -104,31 +78,49 @@ jobs:
           fi
 
           echo "image_repository=$IMAGE_REPOSITORY" >> "$GITHUB_OUTPUT"
-          echo "staging_image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
           echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      - name: Create production release tag in ACR
-        env:
-          IMAGE_REPOSITORY: ${{ steps.source.outputs.image_repository }}
-          IMAGE_DIGEST: ${{ steps.source.outputs.image_digest }}
-          RELEASE_VERSION: ${{ github.event.inputs.release_version }}
+      - name: Validate Azure OIDC inputs
         run: |
-          az account set --subscription "$AZURE_SUBSCRIPTION_ID_VALUE"
-
-          IMAGE_PATH="${IMAGE_REPOSITORY#${ACR_LOGIN_SERVER}/}"
-          if [[ "$IMAGE_PATH" == "$IMAGE_REPOSITORY" || -z "$IMAGE_PATH" ]]; then
-            echo "Image repository must belong to ${ACR_LOGIN_SERVER}: ${IMAGE_REPOSITORY}"
+          if [[ -z "$AZURE_CLIENT_ID_VALUE" ]]; then
+            echo "Missing AZURE_CLIENT_ID. Set it as a GitHub variable or secret."
             exit 1
           fi
+          if [[ -z "$AZURE_TENANT_ID_VALUE" ]]; then
+            echo "Missing AZURE_TENANT_ID. Set it as a GitHub variable or secret."
+            exit 1
+          fi
+          if [[ -z "$AZURE_SUBSCRIPTION_ID_VALUE" ]]; then
+            echo "Missing AZURE_SUBSCRIPTION_ID. Set it as a GitHub variable or secret."
+            exit 1
+          fi
+          if [[ -z "$ACR_NAME" ]]; then
+            echo "Missing ACR_NAME. Set it as a GitHub variable."
+            exit 1
+          fi
+        shell: bash
 
-          az acr show --name "$ACR_NAME" --query id --output tsv >/dev/null
+      - name: Log in to Azure using GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID_VALUE }}
+          tenant-id: ${{ env.AZURE_TENANT_ID_VALUE }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID_VALUE }}
 
-          az acr import \
-            --name "$ACR_NAME" \
-            --source "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" \
-            --image "${IMAGE_PATH}:${RELEASE_VERSION}" \
-            --force
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Create release tag from staging digest
+        env:
+          IMAGE_REPOSITORY: ${{ steps.source.outputs.image_repository }}
+          STAGING_DIGEST: ${{ steps.source.outputs.image_digest }}
+          RELEASE_VERSION: ${{ github.event.inputs.release_version }}
+        run: |
+          docker pull "$IMAGE_REPOSITORY@$STAGING_DIGEST"
+          docker tag "$IMAGE_REPOSITORY@$STAGING_DIGEST" "$IMAGE_REPOSITORY:$RELEASE_VERSION"
+          docker push "$IMAGE_REPOSITORY:$RELEASE_VERSION"
         shell: bash
 
       - name: Update prod values
@@ -161,10 +153,10 @@ jobs:
 
             Source of truth:
             - repository: `${{ steps.source.outputs.image_repository }}`
-            - staging tag: `${{ steps.source.outputs.staging_image_tag }}`
-            - prod release tag: `${{ github.event.inputs.release_version }}`
+            - previous staging tag: `${{ steps.source.outputs.image_tag }}`
+            - release tag: `${{ github.event.inputs.release_version }}`
             - digest: `${{ steps.source.outputs.image_digest }}`
 
-            This PR also keeps the migration job aligned to the same backend artifact without rebuilding the image.
+            This PR also keeps the migration job aligned to the same backend artifact. Production keeps the semantic version tag for readability and still deploys by digest.
           add-paths: |
             ${{ env.TARGET_VALUES_FILE }}
