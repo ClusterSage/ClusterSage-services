@@ -3,19 +3,25 @@ name: Email Worker Promote Prod
 on:
   workflow_dispatch:
     inputs:
-      confirm:
-        description: Type promote-to-prod to continue
+      release_version:
+        description: "Production release version, example: v1.0.0"
         required: true
         type: string
 
 permissions:
   contents: read
+  id-token: write
   pull-requests: write
 
 env:
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
   GITOPS_REPOSITORY: ClusterSage/ClusterSage-gitops
   SOURCE_VALUES_FILE: environments/staging/values/clustersage-values.yaml
   TARGET_VALUES_FILE: environments/prod/values/clustersage-values.yaml
+  AZURE_CLIENT_ID_VALUE: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID_VALUE: ${{ vars.AZURE_TENANT_ID != '' && vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID_VALUE: ${{ vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   promote-prod:
@@ -23,13 +29,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Verify manual confirmation
+      - name: Validate release version
         run: |
-          if [[ "${{ github.event.inputs.confirm }}" != "promote-to-prod" ]]; then
-            echo "Confirmation failed. Type promote-to-prod to continue."
+          if [[ ! "${{ github.event.inputs.release_version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release_version. Expected format: vMAJOR.MINOR.PATCH"
             exit 1
           fi
         shell: bash
+
+      - name: Validate Azure OIDC inputs
+        run: |
+          if [[ -z "$AZURE_CLIENT_ID_VALUE" ]]; then
+            echo "Missing AZURE_CLIENT_ID. Set it as a GitHub variable or secret."
+            exit 1
+          fi
+          if [[ -z "$AZURE_TENANT_ID_VALUE" ]]; then
+            echo "Missing AZURE_TENANT_ID. Set it as a GitHub variable or secret."
+            exit 1
+          fi
+          if [[ -z "$AZURE_SUBSCRIPTION_ID_VALUE" ]]; then
+            echo "Missing AZURE_SUBSCRIPTION_ID. Set it as a GitHub variable or secret."
+            exit 1
+          fi
+          if [[ -z "$ACR_NAME" || -z "$ACR_LOGIN_SERVER" ]]; then
+            echo "Missing ACR_NAME or ACR_LOGIN_SERVER. Set them as GitHub variables."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Log in to Azure using GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID_VALUE }}
+          tenant-id: ${{ env.AZURE_TENANT_ID_VALUE }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID_VALUE }}
 
       - name: Install yq
         run: |
@@ -48,6 +81,10 @@ jobs:
         id: source
         working-directory: gitops
         run: |
+          if [[ "$SOURCE_VALUES_FILE" != "environments/staging/values/clustersage-values.yaml" ]]; then
+            echo "Prod promotion must read from staging only."
+            exit 1
+          fi
           test -f "$SOURCE_VALUES_FILE"
           IMAGE_REPOSITORY="$(yq e '.emailWorker.image.repository' "$SOURCE_VALUES_FILE")"
           IMAGE_TAG="$(yq e '.emailWorker.image.tag' "$SOURCE_VALUES_FILE")"
@@ -67,15 +104,34 @@ jobs:
           fi
 
           echo "image_repository=$IMAGE_REPOSITORY" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "staging_image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
           echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Create production release tag in ACR
+        env:
+          IMAGE_REPOSITORY: ${{ steps.source.outputs.image_repository }}
+          IMAGE_DIGEST: ${{ steps.source.outputs.image_digest }}
+          RELEASE_VERSION: ${{ github.event.inputs.release_version }}
+        run: |
+          IMAGE_PATH="${IMAGE_REPOSITORY#${ACR_LOGIN_SERVER}/}"
+          if [[ "$IMAGE_PATH" == "$IMAGE_REPOSITORY" || -z "$IMAGE_PATH" ]]; then
+            echo "Image repository must belong to ${ACR_LOGIN_SERVER}: ${IMAGE_REPOSITORY}"
+            exit 1
+          fi
+
+          az acr import \
+            --name "$ACR_NAME" \
+            --source "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" \
+            --image "${IMAGE_PATH}:${RELEASE_VERSION}" \
+            --force
         shell: bash
 
       - name: Update prod values
         working-directory: gitops
         env:
           IMAGE_REPOSITORY: ${{ steps.source.outputs.image_repository }}
-          IMAGE_TAG: ${{ steps.source.outputs.image_tag }}
+          IMAGE_TAG: ${{ github.event.inputs.release_version }}
           IMAGE_DIGEST: ${{ steps.source.outputs.image_digest }}
         run: |
           test -f "$TARGET_VALUES_FILE"
@@ -89,16 +145,19 @@ jobs:
         with:
           token: ${{ secrets.GITOPS_REPO_TOKEN }}
           path: gitops
-          commit-message: "[skip ci] chore(prod): promote email worker image ${{ steps.source.outputs.image_tag }}"
-          branch: chore/prod-promote-email-worker-${{ steps.source.outputs.image_tag }}
+          commit-message: "[skip ci] chore(prod): release email worker ${{ github.event.inputs.release_version }}"
+          branch: chore/prod-release-email-worker-${{ github.event.inputs.release_version }}
           delete-branch: true
-          title: "chore(prod): promote email worker image ${{ steps.source.outputs.image_tag }}"
+          title: "chore(prod): release email worker ${{ github.event.inputs.release_version }}"
           body: |
             Promote the email worker image from staging to prod.
 
             Source of truth:
             - repository: `${{ steps.source.outputs.image_repository }}`
-            - tag: `${{ steps.source.outputs.image_tag }}`
+            - staging tag: `${{ steps.source.outputs.staging_image_tag }}`
+            - prod release tag: `${{ github.event.inputs.release_version }}`
             - digest: `${{ steps.source.outputs.image_digest }}`
+            
+            This PR is release-only and does not rebuild the image.
           add-paths: |
             ${{ env.TARGET_VALUES_FILE }}

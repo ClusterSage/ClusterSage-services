@@ -63,7 +63,7 @@ jobs:
 
       - name: Run Snyk scan
         if: github.event.pull_request.head.repo.fork == false
-        run: snyk test --all-projects --detection-depth=2 --file=services/email-worker/requirements.txt
+        run: snyk test --all-projects --detection-depth=2 --file=requirements.txt
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
