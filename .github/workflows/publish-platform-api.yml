@@ -1,4 +1,4 @@
-name: Platform API Build and Promote Dev
+name: Platform API Build and Deploy Dev
 
 on:
   push:
@@ -14,16 +14,18 @@ permissions:
   id-token: write
 
 env:
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
   IMAGE_REPOSITORY: ${{ vars.ACR_LOGIN_SERVER }}/${{ vars.ACR_PLATFORM_API_REPOSITORY != '' && vars.ACR_PLATFORM_API_REPOSITORY || 'clustersage/backend' }}
-  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
-  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
-  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
   GITOPS_REPOSITORY: ClusterSage/ClusterSage-gitops
-  GITOPS_VALUES_FILE: environments/dev/values/clustersage-values.yaml
+  DEV_VALUES_FILE: environments/dev/values/clustersage-values.yaml
+  AZURE_CLIENT_ID_VALUE: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID_VALUE: ${{ vars.AZURE_TENANT_ID != '' && vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID_VALUE: ${{ vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
-  validate:
-    name: Validate Platform API
+  build-and-deploy-dev:
+    name: Build Once and Update Dev GitOps
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -49,43 +51,39 @@ jobs:
       - name: Build Docker image
         run: docker build -t clustersage-backend:${{ github.sha }} .
 
-  docker:
-    name: Build and Push Platform API Image
-    runs-on: ubuntu-latest
-    needs: validate
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Validate Azure workflow configuration
-        shell: bash
+      - name: Validate Azure OIDC inputs
         run: |
-          set -euo pipefail
-          [ -n "${AZURE_CLIENT_ID}" ] || { echo "Missing AZURE_CLIENT_ID. Add it as an org/repo secret or variable."; exit 1; }
-          [ -n "${AZURE_TENANT_ID}" ] || { echo "Missing AZURE_TENANT_ID. Add it as an org/repo secret or variable."; exit 1; }
-          [ -n "${AZURE_SUBSCRIPTION_ID}" ] || { echo "Missing AZURE_SUBSCRIPTION_ID. Add it as an org/repo secret or variable."; exit 1; }
-          [ -n "${{ vars.ACR_NAME }}" ] || { echo "Missing ACR_NAME variable."; exit 1; }
-          [ -n "${{ vars.ACR_LOGIN_SERVER }}" ] || { echo "Missing ACR_LOGIN_SERVER variable."; exit 1; }
+          if [[ -z "$AZURE_CLIENT_ID_VALUE" ]]; then
+            echo "Missing AZURE_CLIENT_ID. Set it as a GitHub variable or secret."
+            exit 1
+          fi
+          if [[ -z "$AZURE_TENANT_ID_VALUE" ]]; then
+            echo "Missing AZURE_TENANT_ID. Set it as a GitHub variable or secret."
+            exit 1
+          fi
+          if [[ -z "$AZURE_SUBSCRIPTION_ID_VALUE" ]]; then
+            echo "Missing AZURE_SUBSCRIPTION_ID. Set it as a GitHub variable or secret."
+            exit 1
+          fi
+        shell: bash
 
       - name: Log in to Azure using GitHub OIDC
         uses: azure/login@v2
         with:
-          client-id: ${{ env.AZURE_CLIENT_ID }}
-          tenant-id: ${{ env.AZURE_TENANT_ID }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ env.AZURE_CLIENT_ID_VALUE }}
+          tenant-id: ${{ env.AZURE_TENANT_ID_VALUE }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID_VALUE }}
 
       - name: Log in to Azure Container Registry
-        run: az acr login --name "${{ vars.ACR_NAME }}"
-
-      - name: Set short SHA
-        id: vars
-        shell: bash
-        run: |
-          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: az acr login --name "$ACR_NAME"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tag
+        id: vars
+        shell: bash
+        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Extract Docker metadata
         id: meta
@@ -93,7 +91,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_REPOSITORY }}
           tags: |
-            type=raw,value=${{ steps.vars.outputs.short_sha }}
+            type=raw,value=${{ steps.vars.outputs.image_tag }}
           labels: |
             org.opencontainers.image.title=ClusterSage Platform API
             org.opencontainers.image.description=ClusterSage platform API container image
@@ -113,23 +111,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Show published image
+      - name: Validate published digest
         run: |
-          echo "${{ env.IMAGE_REPOSITORY }}:${{ steps.vars.outputs.short_sha }}"
-          echo "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
-
-      - name: Validate GitOps promotion configuration
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Invalid or missing image digest: ${IMAGE_DIGEST}"
+            exit 1
+          fi
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         shell: bash
-        run: |
-          set -euo pipefail
-          [ -n "${{ secrets.GITOPS_REPO_TOKEN }}" ] || { echo "Missing GITOPS_REPO_TOKEN secret."; exit 1; }
 
       - name: Install yq
         shell: bash
         run: |
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
-          yq --version
 
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
@@ -139,27 +135,35 @@ jobs:
           token: ${{ secrets.GITOPS_REPO_TOKEN }}
           path: gitops
 
-      - name: Promote platform API image tag in GitOps
-        shell: bash
+      - name: Update dev backend image values
+        working-directory: gitops
+        env:
+          IMAGE_REPOSITORY: ${{ env.IMAGE_REPOSITORY }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          set -euo pipefail
-          cd gitops
-          export SHORT_SHA="${{ steps.vars.outputs.short_sha }}"
-          export IMAGE_REPOSITORY="${{ env.IMAGE_REPOSITORY }}"
-          export IMAGE_DIGEST="${{ steps.build.outputs.digest }}"
-          [[ "${IMAGE_DIGEST}" == sha256:* ]] || { echo "Invalid image digest: ${IMAGE_DIGEST}"; exit 1; }
-          yq -i '.backend.image.repository = strenv(IMAGE_REPOSITORY)' "${GITOPS_VALUES_FILE}"
-          yq -i '.backend.image.tag = env(SHORT_SHA)' "${GITOPS_VALUES_FILE}"
-          yq -i '.backend.image.digest = strenv(IMAGE_DIGEST)' "${GITOPS_VALUES_FILE}"
-          yq -i '.migrationJob.image.repository = strenv(IMAGE_REPOSITORY)' "${GITOPS_VALUES_FILE}"
-          yq -i '.migrationJob.image.tag = env(SHORT_SHA)' "${GITOPS_VALUES_FILE}"
-          yq -i '.migrationJob.image.digest = strenv(IMAGE_DIGEST)' "${GITOPS_VALUES_FILE}"
-          if git diff --quiet -- "${GITOPS_VALUES_FILE}"; then
+          test -f "$DEV_VALUES_FILE"
+          yq -i '.backend.image.repository = strenv(IMAGE_REPOSITORY)' "$DEV_VALUES_FILE"
+          yq -i '.backend.image.tag = strenv(IMAGE_TAG)' "$DEV_VALUES_FILE"
+          yq -i '.backend.image.digest = strenv(IMAGE_DIGEST)' "$DEV_VALUES_FILE"
+          yq -i '.migrationJob.image.repository = strenv(IMAGE_REPOSITORY)' "$DEV_VALUES_FILE"
+          yq -i '.migrationJob.image.tag = strenv(IMAGE_TAG)' "$DEV_VALUES_FILE"
+          yq -i '.migrationJob.image.digest = strenv(IMAGE_DIGEST)' "$DEV_VALUES_FILE"
+        shell: bash
+
+      - name: Commit and push dev GitOps update
+        working-directory: gitops
+        env:
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+        run: |
+          if git diff --quiet -- "$DEV_VALUES_FILE"; then
             echo "No GitOps change required."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${GITOPS_VALUES_FILE}"
-          git commit -m "chore(dev): deploy platform api image ${SHORT_SHA}"
+          git add "$DEV_VALUES_FILE"
+          git commit -m "[skip ci] chore(dev): deploy platform api image ${IMAGE_TAG}"
+          git pull --rebase origin main
           git push origin HEAD:main
+        shell: bash

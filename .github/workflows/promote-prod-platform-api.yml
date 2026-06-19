@@ -1,0 +1,109 @@
+name: Platform API Promote Prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type promote-to-prod to continue
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  GITOPS_REPOSITORY: ClusterSage/ClusterSage-gitops
+  SOURCE_VALUES_FILE: environments/staging/values/clustersage-values.yaml
+  TARGET_VALUES_FILE: environments/prod/values/clustersage-values.yaml
+
+jobs:
+  promote-prod:
+    name: Promote Platform API From Staging to Prod
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify manual confirmation
+        run: |
+          if [[ "${{ github.event.inputs.confirm }}" != "promote-to-prod" ]]; then
+            echo "Confirmation failed. Type promote-to-prod to continue."
+            exit 1
+          fi
+        shell: bash
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPOSITORY }}
+          ref: main
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops
+
+      - name: Read image metadata from staging
+        id: source
+        working-directory: gitops
+        run: |
+          test -f "$SOURCE_VALUES_FILE"
+          IMAGE_REPOSITORY="$(yq e '.backend.image.repository' "$SOURCE_VALUES_FILE")"
+          IMAGE_TAG="$(yq e '.backend.image.tag' "$SOURCE_VALUES_FILE")"
+          IMAGE_DIGEST="$(yq e '.backend.image.digest' "$SOURCE_VALUES_FILE")"
+
+          if [[ -z "$IMAGE_REPOSITORY" || "$IMAGE_REPOSITORY" == "null" ]]; then
+            echo "Staging backend image repository is missing."
+            exit 1
+          fi
+          if [[ -z "$IMAGE_TAG" || "$IMAGE_TAG" == "null" ]]; then
+            echo "Staging backend image tag is missing."
+            exit 1
+          fi
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Staging backend image digest is invalid: $IMAGE_DIGEST"
+            exit 1
+          fi
+
+          echo "image_repository=$IMAGE_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Update prod values
+        working-directory: gitops
+        env:
+          IMAGE_REPOSITORY: ${{ steps.source.outputs.image_repository }}
+          IMAGE_TAG: ${{ steps.source.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ steps.source.outputs.image_digest }}
+        run: |
+          test -f "$TARGET_VALUES_FILE"
+          yq -i '.backend.image.repository = strenv(IMAGE_REPOSITORY)' "$TARGET_VALUES_FILE"
+          yq -i '.backend.image.tag = strenv(IMAGE_TAG)' "$TARGET_VALUES_FILE"
+          yq -i '.backend.image.digest = strenv(IMAGE_DIGEST)' "$TARGET_VALUES_FILE"
+          yq -i '.migrationJob.image.repository = strenv(IMAGE_REPOSITORY)' "$TARGET_VALUES_FILE"
+          yq -i '.migrationJob.image.tag = strenv(IMAGE_TAG)' "$TARGET_VALUES_FILE"
+          yq -i '.migrationJob.image.digest = strenv(IMAGE_DIGEST)' "$TARGET_VALUES_FILE"
+        shell: bash
+
+      - name: Create prod promotion PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops
+          commit-message: "[skip ci] chore(prod): promote platform api image ${{ steps.source.outputs.image_tag }}"
+          branch: chore/prod-promote-platform-api-${{ steps.source.outputs.image_tag }}
+          delete-branch: true
+          title: "chore(prod): promote platform api image ${{ steps.source.outputs.image_tag }}"
+          body: |
+            Promote the platform API image from staging to prod.
+
+            Source of truth:
+            - repository: `${{ steps.source.outputs.image_repository }}`
+            - tag: `${{ steps.source.outputs.image_tag }}`
+            - digest: `${{ steps.source.outputs.image_digest }}`
+
+            This PR also keeps the migration job aligned to the same backend artifact.
+          add-paths: |
+            ${{ env.TARGET_VALUES_FILE }}

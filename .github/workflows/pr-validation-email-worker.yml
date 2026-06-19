@@ -1,0 +1,72 @@
+name: Email Worker PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "services/email-worker/**"
+      - ".github/workflows/pr-validation-email-worker.yml"
+      - ".github/workflows/publish-email-worker.yml"
+      - ".github/workflows/promote-staging-email-worker.yml"
+      - ".github/workflows/promote-prod-email-worker.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Lint, Build, and Security Scan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/email-worker
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile application
+        run: python -m compileall app
+
+      - name: Build Docker image
+        run: docker build -t clustersage-email-worker:${{ github.sha }} .
+
+      - name: SonarQube scan
+        if: github.event.pull_request.head.repo.fork == false
+        uses: SonarSource/sonarqube-scan-action@v8.2.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          projectBaseDir: .
+          args: >
+            "-Dsonar.projectKey=ClusterSage_clustersage-services-email-worker"
+            "-Dsonar.projectName=clustersage-services-email-worker"
+            "-Dsonar.sources=services/email-worker"
+
+      - name: Set up Snyk CLI
+        if: github.event.pull_request.head.repo.fork == false
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk scan
+        if: github.event.pull_request.head.repo.fork == false
+        run: snyk test --all-projects --detection-depth=2 --file=services/email-worker/requirements.txt
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Skip security scans on fork pull requests
+        if: github.event.pull_request.head.repo.fork == true
+        run: echo "Skipping SonarQube and Snyk because GitHub does not expose secrets to forked pull requests."
