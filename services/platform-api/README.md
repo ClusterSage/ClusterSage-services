@@ -35,3 +35,5 @@ alembic upgrade head
 ```bash
 docker build -t clustersage-backend .
 ```
+
+The image uses a multi-stage build and the runtime container runs as a non-root application user.

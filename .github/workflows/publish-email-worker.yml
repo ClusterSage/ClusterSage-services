@@ -121,6 +121,16 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         shell: bash
 
+      - name: Trivy scan email worker image
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}
+          format: table
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
       - name: Install yq
         shell: bash
         run: |

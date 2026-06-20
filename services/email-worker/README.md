@@ -27,3 +27,5 @@ cp .env.example .env
 ```bash
 docker build -t clustersage-email-worker .
 ```
+
+The image uses a multi-stage build and the runtime container runs as a non-root application user.
