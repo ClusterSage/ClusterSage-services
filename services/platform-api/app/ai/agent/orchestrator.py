@@ -298,6 +298,7 @@ class ClusterAgentOrchestrator:
         )
 
     def _parse_final_answer(self, question: str, content: str | None, tool_results: list[dict[str, Any]]) -> AgentFinalAnswer:
+        deterministic = self._deterministic_answer(question, tool_results)
         if content:
             try:
                 parsed = AgentFinalAnswer.model_validate_json(content)
@@ -310,6 +311,8 @@ class ClusterAgentOrchestrator:
                         return parsed
                     except Exception:
                         pass
+                if deterministic:
+                    return deterministic
                 log.warning("agent returned malformed output; using fallback parser")
                 text = content.strip()
                 if text:
@@ -319,6 +322,8 @@ class ClusterAgentOrchestrator:
                         confidence="low",
                         data_freshness=merge_data_freshness(tool_results),
                     )
+        if deterministic:
+            return deterministic
         return self._fallback_answer(question, tool_results)
 
     def _collect_evidence(self, tool_results: list[dict[str, Any]]) -> list[Any]:
