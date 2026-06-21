@@ -481,6 +481,9 @@ class ClusterAgentOrchestrator:
         if "namespace_count" in payload:
             count = payload["namespace_count"]
             return f"The latest stored cluster snapshot shows {count} namespace{'s' if count != 1 else ''}."
+        if "namespaces_count" in payload:
+            count = payload["namespaces_count"]
+            return f"The latest stored cluster snapshot shows {count} namespace{'s' if count != 1 else ''}."
         if "deployment_count" in payload:
             count = payload["deployment_count"]
             return f"The latest stored cluster snapshot shows {count} deployment{'s' if count != 1 else ''}."

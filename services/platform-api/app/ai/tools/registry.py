@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent.evidence import compact_tool_result
@@ -94,7 +94,21 @@ async def execute_tool(
 ) -> tuple[dict[str, Any], ToolExecutionRecord]:
     started_at = datetime.now(timezone.utc)
     tool = TOOL_MAP[tool_name]
-    parsed = tool.schema.model_validate(arguments)
+    try:
+        parsed = tool.schema.model_validate(arguments)
+    except ValidationError as exc:
+        finished_at = datetime.now(timezone.utc)
+        return (
+            {"count": 0, "items": [], "truncated": False, "message": f"{tool_name} arguments were invalid"},
+            ToolExecutionRecord(
+                tool_name=tool_name,
+                status="error",
+                started_at=started_at,
+                finished_at=finished_at,
+                arguments=arguments,
+                result_summary={"tool": tool_name, "error": "invalid_arguments", "details": exc.errors(include_url=False)},
+            ),
+        )
     try:
         result = await asyncio.wait_for(
             tool.executor(session, ctx, parsed),  # type: ignore[misc]
@@ -120,5 +134,18 @@ async def execute_tool(
                 finished_at=finished_at,
                 arguments=arguments,
                 result_summary={"tool": tool_name, "timeout": True},
+            ),
+        )
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        return (
+            {"count": 0, "items": [], "truncated": False, "message": f"{tool_name} failed"},
+            ToolExecutionRecord(
+                tool_name=tool_name,
+                status="error",
+                started_at=started_at,
+                finished_at=finished_at,
+                arguments=arguments,
+                result_summary={"tool": tool_name, "error": type(exc).__name__},
             ),
         )
