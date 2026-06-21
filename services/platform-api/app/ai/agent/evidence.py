@@ -42,7 +42,12 @@ def merge_data_freshness(results: list[dict[str, Any]]) -> DataFreshness:
 
 def normalize_evidence_reference(item: dict[str, Any]) -> EvidenceReference | None:
     try:
-        return EvidenceReference.model_validate(item)
+        payload = {
+            "source_type": item.get("source_type"),
+            "source_id": item.get("source_id"),
+            "title": item.get("title"),
+            "timestamp": item.get("timestamp"),
+        }
+        return EvidenceReference.model_validate(payload)
     except Exception:
         return None
-

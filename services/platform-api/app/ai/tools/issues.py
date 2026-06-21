@@ -18,12 +18,13 @@ class ClusterIssueSummaryInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hours: int = Field(default=24, ge=1, le=168)
+    minutes: int | None = Field(default=None, ge=1, le=1440)
     namespace: str | None = None
     issue_type: str | None = None
 
 
 async def get_cluster_issue_summary(session: AsyncSession, ctx: AgentExecutionContext, args: ClusterIssueSummaryInput) -> dict[str, Any]:
-    start_at = datetime.now(timezone.utc) - timedelta(hours=args.hours)
+    start_at = datetime.now(timezone.utc) - timedelta(minutes=args.minutes) if args.minutes else datetime.now(timezone.utc) - timedelta(hours=args.hours)
     rows = (
         await session.execute(
             select(Issue)

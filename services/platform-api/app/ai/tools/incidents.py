@@ -21,6 +21,7 @@ class ListClusterIncidentsInput(BaseModel):
     workload: str | None = None
     incident_type: str | None = None
     hours: int = Field(default=24, ge=1, le=168)
+    minutes: int | None = Field(default=None, ge=1, le=1440)
     limit: int = Field(default=10, ge=1, le=50)
 
 
@@ -31,7 +32,7 @@ class GetIncidentDetailsInput(BaseModel):
 
 
 async def list_cluster_incidents(session: AsyncSession, ctx: AgentExecutionContext, args: ListClusterIncidentsInput) -> dict[str, Any]:
-    start_at = datetime.now(timezone.utc) - timedelta(hours=args.hours)
+    start_at = datetime.now(timezone.utc) - timedelta(minutes=args.minutes) if args.minutes else datetime.now(timezone.utc) - timedelta(hours=args.hours)
     stmt = (
         select(AIIncident)
         .where(

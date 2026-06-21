@@ -264,9 +264,10 @@ class ClusterAgentOrchestrator:
     def _bootstrap_tool_requests(self, question: str) -> list[tuple[str, dict[str, Any]]]:
         normalized = question.lower()
         requests: list[tuple[str, dict[str, Any]]] = [("get_latest_cluster_snapshot_summary", {})]
+        issue_window = self._issue_time_window_args(normalized)
         if any(token in normalized for token in ["error", "issue", "incident", "problem", "failing", "failure", "restart", "health", "unhealthy"]):
-            requests.append(("get_cluster_issue_summary", {"hours": 24}))
-            requests.append(("list_cluster_incidents", {"hours": 24, "limit": 10}))
+            requests.append(("get_cluster_issue_summary", issue_window))
+            requests.append(("list_cluster_incidents", {**issue_window, "limit": 10}))
         if any(token in normalized for token in ["deployment", "deploy", "release", "rollout"]):
             requests.append(("get_recent_deployments", {"hours": 72, "limit": 10}))
         unique: list[tuple[str, dict[str, Any]]] = []
@@ -297,17 +298,29 @@ class ClusterAgentOrchestrator:
             f"{json.dumps(compact, ensure_ascii=True)}"
         )
 
+    def _issue_time_window_args(self, question: str) -> dict[str, Any]:
+        match = re.search(r"last\s+(\d+)\s+(minute|minutes|hour|hours|day|days)\b", question)
+        if not match:
+            return {"hours": 24}
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if unit.startswith("minute"):
+            return {"minutes": amount}
+        if unit.startswith("hour"):
+            return {"hours": amount}
+        return {"hours": max(1, amount * 24)}
+
     def _parse_final_answer(self, question: str, content: str | None, tool_results: list[dict[str, Any]]) -> AgentFinalAnswer:
         deterministic = self._deterministic_answer(question, tool_results)
         if content:
             try:
-                parsed = AgentFinalAnswer.model_validate_json(content)
+                parsed = self._post_process_answer(question, AgentFinalAnswer.model_validate_json(content), tool_results)
                 return parsed
             except Exception:
                 match = re.search(r"\{.*\}", content, re.DOTALL)
                 if match:
                     try:
-                        parsed = AgentFinalAnswer.model_validate_json(match.group(0))
+                        parsed = self._post_process_answer(question, AgentFinalAnswer.model_validate_json(match.group(0)), tool_results)
                         return parsed
                     except Exception:
                         pass
@@ -325,6 +338,19 @@ class ClusterAgentOrchestrator:
         if deterministic:
             return deterministic
         return self._fallback_answer(question, tool_results)
+
+    def _post_process_answer(self, question: str, answer: AgentFinalAnswer, tool_results: list[dict[str, Any]]) -> AgentFinalAnswer:
+        text = answer.answer.strip()
+        if not text.startswith("{"):
+            return answer
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return answer
+        humanized = self._humanize_json_answer(question, payload)
+        if not humanized:
+            return answer
+        return answer.model_copy(update={"answer": humanized, "evidence": self._collect_evidence(tool_results) or answer.evidence})
 
     def _collect_evidence(self, tool_results: list[dict[str, Any]]) -> list[Any]:
         evidence = []
@@ -414,10 +440,64 @@ class ClusterAgentOrchestrator:
             if incident_summary and isinstance(incident_summary.get("count"), int):
                 parts.append(f"{incident_summary['count']} recent incident{'s' if incident_summary['count'] != 1 else ''}")
             if parts:
+                window_label = self._time_window_label(normalized)
                 return AgentFinalAnswer(
-                    answer=f"From the stored cluster evidence, I found {' and '.join(parts)} in the recent window I checked.",
+                    answer=f"From the stored cluster evidence, I found {' and '.join(parts)}{window_label}.",
                     evidence=evidence,
                     confidence="medium",
                     data_freshness=freshness,
                 )
         return None
+
+    def _time_window_label(self, question: str) -> str:
+        match = re.search(r"last\s+(\d+)\s+(minute|minutes|hour|hours|day|days)\b", question)
+        if not match:
+            return " in the recent window I checked"
+        amount = int(match.group(1))
+        unit = match.group(2)
+        return f" in the last {amount} {unit}"
+
+    def _humanize_json_answer(self, question: str, payload: dict[str, Any]) -> str | None:
+        if "namespace_count" in payload:
+            count = payload["namespace_count"]
+            return f"The latest stored cluster snapshot shows {count} namespace{'s' if count != 1 else ''}."
+        if "deployment_count" in payload:
+            count = payload["deployment_count"]
+            return f"The latest stored cluster snapshot shows {count} deployment{'s' if count != 1 else ''}."
+        if "pod_count" in payload:
+            count = payload["pod_count"]
+            return f"The latest stored cluster snapshot shows {count} pod{'s' if count != 1 else ''}."
+        details = payload.get("details")
+        if any(key.startswith("errors_in_last_") for key in payload.keys()) and isinstance(details, list):
+            truthy_key = next(key for key in payload.keys() if key.startswith("errors_in_last_"))
+            has_errors = bool(payload.get(truthy_key))
+            if not has_errors:
+                return f"No, I did not find any errors in {truthy_key.removeprefix('errors_in_').replace('_', ' ')}."
+            summary = self._summarize_detail_rows(details)
+            return f"Yes. I found {summary}."
+        if "total_errors" in payload and isinstance(details, list):
+            total = payload["total_errors"]
+            summary = self._summarize_detail_rows(details)
+            return f"I found {total} error signal{'s' if total != 1 else ''} in the stored cluster evidence. {summary}."
+        return None
+
+    def _summarize_detail_rows(self, details: list[Any]) -> str:
+        phrases: list[str] = []
+        for item in details[:3]:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("issue_type") or item.get("type") or item.get("title") or "issue"
+            count = item.get("count")
+            namespace = item.get("namespace")
+            phrase = f"{count} {label}" if isinstance(count, int) else str(label)
+            if namespace:
+                phrase += f" in {namespace}"
+            summary = item.get("summary") or item.get("description")
+            if isinstance(summary, str) and summary:
+                phrase += f" ({summary})"
+            phrases.append(phrase)
+        if not phrases:
+            return "cluster issues in the latest stored evidence"
+        if len(phrases) == 1:
+            return phrases[0]
+        return ", ".join(phrases[:-1]) + f", and {phrases[-1]}"
