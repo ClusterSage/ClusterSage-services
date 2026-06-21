@@ -474,6 +474,10 @@ class ClusterAgentOrchestrator:
         response_text = payload.get("response")
         if isinstance(response_text, str) and response_text.strip():
             return response_text.strip()
+        if "example_namespace" in payload and isinstance(payload["example_namespace"], str):
+            return f"One namespace in the latest stored cluster data is `{payload['example_namespace']}`."
+        if "namespace_example" in payload and isinstance(payload["namespace_example"], str):
+            return payload["namespace_example"]
         if "namespace_count" in payload:
             count = payload["namespace_count"]
             return f"The latest stored cluster snapshot shows {count} namespace{'s' if count != 1 else ''}."
@@ -495,6 +499,17 @@ class ClusterAgentOrchestrator:
             total = payload["total_errors"]
             summary = self._summarize_detail_rows(details)
             return f"I found {total} error signal{'s' if total != 1 else ''} in the stored cluster evidence. {summary}."
+        latest_errors = payload.get("latest_errors")
+        if isinstance(latest_errors, list):
+            summary = self._summarize_detail_rows(latest_errors)
+            note = payload.get("note")
+            answer = f"The latest errors I found are {summary}."
+            if isinstance(note, str) and note.strip():
+                answer += f" {note.strip()}"
+            return answer
+        string_fields = [value.strip() for value in payload.values() if isinstance(value, str) and value.strip()]
+        if len(payload) == 1 and len(string_fields) == 1:
+            return string_fields[0]
         return None
 
     def _summarize_detail_rows(self, details: list[Any]) -> str:
@@ -506,8 +521,11 @@ class ClusterAgentOrchestrator:
             count = item.get("count")
             namespace = item.get("namespace")
             phrase = f"{count} {label}" if isinstance(count, int) else str(label)
+            workload_name = item.get("workload_name") or item.get("pod_name")
             if namespace:
                 phrase += f" in {namespace}"
+            if workload_name:
+                phrase += f" for {workload_name}"
             summary = item.get("summary") or item.get("description")
             if isinstance(summary, str) and summary:
                 phrase += f" ({summary})"
