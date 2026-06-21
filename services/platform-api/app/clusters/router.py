@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.ai.agent.orchestrator import ClusterAgentOrchestrator
 from app.ai.cluster_query import ClusterQueryService
 from app.audit.service import write_audit
 from app.auth.dependencies import get_current_user
@@ -16,12 +17,13 @@ from app.metrics import (
     build_metrics_overview,
     metrics_window_start,
 )
-from app.models.entities import AIIncident, Cluster, ClusterMetricSample, ClusterSnapshot, Issue, LogBatch, RemediationAction, RemediationApproval, RemediationSuggestion, User
-from app.schemas.api import AIClusterQueryRequest, AIClusterQueryResponse, AIIncidentResponse, ClusterMetricFilterCatalogResponse, ClusterMetricLatestResponse, ClusterMetricsOverviewResponse, ClusterMetricTimeseriesResponse, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
+from app.models.entities import AIConversation, AIIncident, AIMessage, Cluster, ClusterMetricSample, ClusterSnapshot, Issue, LogBatch, RemediationAction, RemediationApproval, RemediationSuggestion, User
+from app.schemas.api import AIChatRequest, AIChatResponse, AIClusterQueryRequest, AIClusterQueryResponse, AIConversationDetailResponse, AIConversationMessageResponse, AIConversationResponse, AIIncidentResponse, ClusterMetricFilterCatalogResponse, ClusterMetricLatestResponse, ClusterMetricsOverviewResponse, ClusterMetricTimeseriesResponse, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
 from app.storage.blob import BlobReader
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 cluster_query_service = ClusterQueryService()
+cluster_agent_orchestrator = ClusterAgentOrchestrator()
 
 RESOURCE_KEYS = {
     "pod": "pods",
@@ -618,6 +620,75 @@ async def resource_incidents(clusterId: UUID, kind: str, namespace: str, name: s
 @router.get("/{clusterId}/incidents", response_model=list[AIIncidentResponse])
 async def cluster_incidents(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     return await cluster_incident_rows(clusterId, user, session)
+
+
+def conversation_response_from(row: AIConversation) -> AIConversationResponse:
+    return AIConversationResponse.model_validate(row)
+
+
+def message_response_from(row: AIMessage) -> AIConversationMessageResponse:
+    return AIConversationMessageResponse.model_validate(row)
+
+
+@router.post("/{clusterId}/ai/chat", response_model=AIChatResponse)
+async def cluster_ai_chat(clusterId: UUID, body: AIChatRequest, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    if not settings.ai_agent_enabled:
+        raise HTTPException(status_code=403, detail="AI agent is disabled in this environment")
+    cluster = await get_cluster(clusterId, user, session)
+    try:
+        conversation, assistant_message = await cluster_agent_orchestrator.chat(
+            session=session,
+            cluster=cluster,
+            user=user,
+            message=body.message,
+            conversation_id=str(body.conversation_id) if body.conversation_id else None,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        detail = str(exc)
+        if detail == "AI provider unavailable":
+            raise HTTPException(status_code=503, detail="AI provider unavailable") from exc
+        raise HTTPException(status_code=403, detail=detail) from exc
+    return AIChatResponse(
+        conversation_id=conversation.id,
+        message_id=assistant_message.id,
+        answer=assistant_message.content,
+        evidence=assistant_message.evidence_references or [],
+        confidence=assistant_message.confidence or "low",
+        data_freshness=assistant_message.data_freshness or {},
+        tools_used=[item.get("tool_name") for item in (assistant_message.tool_execution_metadata or []) if isinstance(item, dict) and item.get("tool_name")],
+        created_at=assistant_message.created_at,
+    )
+
+
+@router.get("/{clusterId}/ai/conversations", response_model=list[AIConversationResponse])
+async def cluster_ai_conversations(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    if not settings.ai_agent_enabled:
+        raise HTTPException(status_code=403, detail="AI agent is disabled in this environment")
+    cluster = await get_cluster(clusterId, user, session)
+    rows = await cluster_agent_orchestrator.list_conversations(session=session, cluster=cluster, user=user)
+    return [conversation_response_from(row) for row in rows]
+
+
+@router.get("/{clusterId}/ai/conversations/{conversationId}", response_model=AIConversationDetailResponse)
+async def cluster_ai_conversation_detail(clusterId: UUID, conversationId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    if not settings.ai_agent_enabled:
+        raise HTTPException(status_code=403, detail="AI agent is disabled in this environment")
+    cluster = await get_cluster(clusterId, user, session)
+    try:
+        conversation, messages = await cluster_agent_orchestrator.get_conversation(
+            session=session,
+            cluster=cluster,
+            user=user,
+            conversation_id=str(conversationId),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return AIConversationDetailResponse(
+        conversation=conversation_response_from(conversation),
+        messages=[message_response_from(message) for message in messages],
+    )
 
 
 @router.post("/{clusterId}/ai/query", response_model=AIClusterQueryResponse)

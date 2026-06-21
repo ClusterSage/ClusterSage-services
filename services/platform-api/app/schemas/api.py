@@ -314,6 +314,54 @@ class AIClusterQueryResponse(BaseModel):
 class AIClusterQueryRequest(BaseModel):
     question: str = Field(min_length=3, max_length=1000)
 
+
+class AIConversationResponse(BaseModel):
+    id: UUID
+    cluster_id: UUID
+    user_id: UUID
+    title: str
+    summary: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    archived_at: datetime | None = None
+    model_config = {"from_attributes": True}
+
+
+class AIConversationMessageResponse(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    role: str
+    content: str
+    evidence_references: list[dict[str, Any]] | None = None
+    tool_execution_metadata: list[dict[str, Any]] | None = None
+    ai_model: str | None = None
+    prompt_version: str | None = None
+    confidence: str | None = None
+    data_freshness: dict[str, Any] | None = None
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+
+class AIConversationDetailResponse(BaseModel):
+    conversation: AIConversationResponse
+    messages: list[AIConversationMessageResponse] = Field(default_factory=list)
+
+
+class AIChatRequest(BaseModel):
+    conversation_id: UUID | None = None
+    message: str = Field(min_length=3, max_length=4000)
+
+
+class AIChatResponse(BaseModel):
+    conversation_id: UUID
+    message_id: UUID
+    answer: str
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    confidence: str = "low"
+    data_freshness: dict[str, Any] = Field(default_factory=dict)
+    tools_used: list[str] = Field(default_factory=list)
+    created_at: datetime
+
 class AuditLogResponse(BaseModel):
     id: UUID
     action: str

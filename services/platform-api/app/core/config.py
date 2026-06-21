@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     azure_client_id: str = ""
     ai_analysis_enabled: bool = False
     ai_cluster_query_enabled: bool = False
+    ai_agent_enabled: bool = False
     alert_evaluation_enabled: bool = False
     alert_evaluation_interval_seconds: int = 60
     metrics_ingestion_enabled: bool = True
@@ -47,6 +48,20 @@ class Settings(BaseSettings):
     ai_max_tokens: int = 1200
     ai_temperature: float = 0
     ai_prompt_version: str = "v1"
+    ai_agent_max_tool_calls: int = 6
+    ai_agent_max_iterations: int = 4
+    ai_agent_max_context_tokens: int = 12000
+    ai_agent_max_history_messages: int = 8
+    ai_agent_tool_timeout_seconds: int = 8
+    ai_agent_request_timeout_seconds: int = 45
+    ai_agent_max_db_rows: int = 50
+    ai_agent_max_log_matches: int = 20
+    ai_agent_max_blob_bytes: int = 1048576
+    ai_agent_max_blob_batches: int = 8
+    ai_agent_max_document_characters: int = 4000
+    ai_agent_knowledge_base_max_results: int = 5
+    ai_agent_log_max_time_range_hours: int = 24
+    ai_agent_prompt_version: str = "cluster-investigator-v1"
 
     @property
     def cors_origins(self) -> list[str]:

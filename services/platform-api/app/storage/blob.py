@@ -2,6 +2,7 @@ import gzip
 import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from azure.core.exceptions import ResourceExistsError
 from azure.storage.blob import BlobServiceClient, ContentSettings
@@ -47,3 +48,23 @@ class BlobReader:
         except gzip.BadGzipFile:
             raw = body
         return json.loads(raw.decode("utf-8"))
+
+    def read_bytes(self, blob_path: str, *, max_bytes: int | None = None) -> bytes:
+        if ".." in blob_path or blob_path.startswith("/") or "\\" in blob_path:
+            raise ValueError("Invalid blob path")
+        container = self.client.get_container_client(self.container_name)
+        body = container.download_blob(blob_path).readall()
+        if max_bytes is not None:
+            body = body[:max_bytes]
+        return body
+
+    def list_blob_names(self, *, prefix: str, limit: int = 50) -> list[str]:
+        container = self.client.get_container_client(self.container_name)
+        return [blob.name for blob in container.list_blobs(name_starts_with=prefix)][:limit]
+
+    @staticmethod
+    def blob_extension(blob_path: str) -> str:
+        suffixes = Path(blob_path).suffixes
+        if suffixes[-2:] == [".json", ".gz"]:
+            return ".json"
+        return Path(blob_path).suffix.lower()

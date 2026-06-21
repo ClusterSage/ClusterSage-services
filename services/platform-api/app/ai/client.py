@@ -40,26 +40,54 @@ class AzureAIFoundryClient:
         headers["Authorization"] = f"Bearer {token.token}"
         return headers
 
-    def analyze(self, *, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float) -> dict:
+    def _request(self, body: dict, *, timeout: int = 30) -> dict:
         if not self.configured:
             raise RuntimeError("Azure AI Foundry is not configured")
-
-        body = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
-        }
         req = request.Request(
             self._url(),
             data=json.dumps(body).encode("utf-8"),
             headers=self._headers(),
             method="POST",
         )
-        with request.urlopen(req, timeout=30) as response:
+        with request.urlopen(req, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        return payload
+
+    def analyze(self, *, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float) -> dict:
+        payload = self._request(
+            {
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "response_format": {"type": "json_object"},
+            }
+        )
         content = payload["choices"][0]["message"]["content"]
         return json.loads(content)
+
+    def complete_chat(
+        self,
+        *,
+        messages: list[dict],
+        max_tokens: int,
+        temperature: float,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        response_format: dict | None = None,
+        timeout: int = 45,
+    ) -> dict:
+        body: dict[str, object] = {
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            body["tools"] = tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
+        if response_format is not None:
+            body["response_format"] = response_format
+        return self._request(body, timeout=timeout)

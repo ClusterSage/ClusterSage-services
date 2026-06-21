@@ -1,0 +1,56 @@
+[
+  {
+    "id": "product-overview",
+    "title": "Product Overview",
+    "tags": ["platform", "overview", "tenant", "clusters"],
+    "source": "repos/ClusterSage-docs/ARCHITECTURE.md",
+    "version": "1.0",
+    "last_reviewed": "2026-06-21",
+    "path": "product-overview.md"
+  },
+  {
+    "id": "incident-analysis",
+    "title": "Incident Analysis",
+    "tags": ["incident", "severity", "root-cause", "remediation"],
+    "source": "repos/ClusterSage-docs/ARCHITECTURE.md",
+    "version": "1.0",
+    "last_reviewed": "2026-06-21",
+    "path": "incident-analysis.md"
+  },
+  {
+    "id": "telemetry-and-ingestion",
+    "title": "Telemetry And Ingestion",
+    "tags": ["telemetry", "ingestion", "logs", "events", "snapshots"],
+    "source": "AI_CONTEXT.md",
+    "version": "1.0",
+    "last_reviewed": "2026-06-21",
+    "path": "telemetry-and-ingestion.md"
+  },
+  {
+    "id": "cluster-investigation",
+    "title": "Cluster Investigation",
+    "tags": ["investigation", "workloads", "deployments", "logs"],
+    "source": "AI_CONTEXT.md",
+    "version": "1.0",
+    "last_reviewed": "2026-06-21",
+    "path": "cluster-investigation.md"
+  },
+  {
+    "id": "security-and-remediation",
+    "title": "Security And Remediation",
+    "tags": ["security", "approval", "remediation", "isolation"],
+    "source": "RISK_REGISTER.md",
+    "version": "1.0",
+    "last_reviewed": "2026-06-21",
+    "path": "security-and-remediation.md"
+  },
+  {
+    "id": "glossary",
+    "title": "Glossary",
+    "tags": ["glossary", "kubernetes", "health", "failures"],
+    "source": "AI_CONTEXT.md",
+    "version": "1.0",
+    "last_reviewed": "2026-06-21",
+    "path": "glossary.md"
+  }
+]
