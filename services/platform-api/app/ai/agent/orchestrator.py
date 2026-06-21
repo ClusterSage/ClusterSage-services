@@ -329,6 +329,19 @@ class ClusterAgentOrchestrator:
                 log.warning("agent returned malformed output; using fallback parser")
                 text = content.strip()
                 if text:
+                    if text.startswith("{"):
+                        try:
+                            payload = json.loads(text)
+                            humanized = self._humanize_json_answer(question, payload)
+                            if humanized:
+                                return AgentFinalAnswer(
+                                    answer=humanized,
+                                    evidence=self._collect_evidence(tool_results),
+                                    confidence="low",
+                                    data_freshness=merge_data_freshness(tool_results),
+                                )
+                        except json.JSONDecodeError:
+                            pass
                     return AgentFinalAnswer(
                         answer=text,
                         evidence=self._collect_evidence(tool_results),
