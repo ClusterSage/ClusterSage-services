@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -178,6 +179,12 @@ class ClusterAgentOrchestrator:
         tool_results: list[dict[str, Any]] = []
         usage: dict[str, Any] | None = None
         tool_calls_used = 0
+        bootstrap_results, bootstrap_records = await self._bootstrap_tool_results(session, ctx, question)
+        if bootstrap_results:
+            tool_results.extend(bootstrap_results)
+            tool_records.extend(bootstrap_records)
+            tool_calls_used += len(bootstrap_records)
+            messages.append({"role": "system", "content": self._build_bootstrap_context(bootstrap_results)})
 
         for _ in range(settings.ai_agent_max_iterations):
             response = await asyncio.to_thread(
@@ -234,33 +241,108 @@ class ClusterAgentOrchestrator:
                 if tool_calls_used >= settings.ai_agent_max_tool_calls:
                     break
                 continue
-            final = self._parse_final_answer(message.get("content"), tool_results)
+            final = self._parse_final_answer(question, message.get("content"), tool_results)
             return final, tool_records, usage
 
-        final = self._fallback_answer(tool_results)
+        final = self._fallback_answer(question, tool_results)
         return final, tool_records, usage
 
-    def _parse_final_answer(self, content: str | None, tool_results: list[dict[str, Any]]) -> AgentFinalAnswer:
+    async def _bootstrap_tool_results(
+        self,
+        session: AsyncSession,
+        ctx: AgentExecutionContext,
+        question: str,
+    ) -> tuple[list[dict[str, Any]], list[Any]]:
+        results: list[dict[str, Any]] = []
+        records: list[Any] = []
+        for tool_name, arguments in self._bootstrap_tool_requests(question):
+            result, record = await execute_tool(session, ctx, tool_name=tool_name, arguments=arguments)
+            results.append(result)
+            records.append(record)
+        return results, records
+
+    def _bootstrap_tool_requests(self, question: str) -> list[tuple[str, dict[str, Any]]]:
+        normalized = question.lower()
+        requests: list[tuple[str, dict[str, Any]]] = [("get_latest_cluster_snapshot_summary", {})]
+        if any(token in normalized for token in ["error", "issue", "incident", "problem", "failing", "failure", "restart", "health", "unhealthy"]):
+            requests.append(("get_cluster_issue_summary", {"hours": 24}))
+            requests.append(("list_cluster_incidents", {"hours": 24, "limit": 10}))
+        if any(token in normalized for token in ["deployment", "deploy", "release", "rollout"]):
+            requests.append(("get_recent_deployments", {"hours": 72, "limit": 10}))
+        unique: list[tuple[str, dict[str, Any]]] = []
+        seen: set[tuple[str, str]] = set()
+        for tool_name, arguments in requests:
+            key = (tool_name, json.dumps(arguments, sort_keys=True))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((tool_name, arguments))
+        return unique[: settings.ai_agent_max_tool_calls]
+
+    def _build_bootstrap_context(self, tool_results: list[dict[str, Any]]) -> str:
+        compact = []
+        for result in tool_results:
+            compact.append(
+                {
+                    "count": result.get("count"),
+                    "aggregates": result.get("aggregates"),
+                    "items": result.get("items", [])[:3],
+                    "latest_evidence_at": result.get("latest_evidence_at"),
+                    "truncated": result.get("truncated", False),
+                }
+            )
+        return (
+            "Preloaded cluster evidence is available below. Use it directly when it answers the question, "
+            "and call additional tools only when needed.\n"
+            f"{json.dumps(compact, ensure_ascii=True)}"
+        )
+
+    def _parse_final_answer(self, question: str, content: str | None, tool_results: list[dict[str, Any]]) -> AgentFinalAnswer:
         if content:
             try:
                 parsed = AgentFinalAnswer.model_validate_json(content)
                 return parsed
             except Exception:
+                match = re.search(r"\{.*\}", content, re.DOTALL)
+                if match:
+                    try:
+                        parsed = AgentFinalAnswer.model_validate_json(match.group(0))
+                        return parsed
+                    except Exception:
+                        pass
                 log.warning("agent returned malformed output; using fallback parser")
-        return self._fallback_answer(tool_results)
+                text = content.strip()
+                if text:
+                    return AgentFinalAnswer(
+                        answer=text,
+                        evidence=self._collect_evidence(tool_results),
+                        confidence="low",
+                        data_freshness=merge_data_freshness(tool_results),
+                    )
+        return self._fallback_answer(question, tool_results)
 
-    def _fallback_answer(self, tool_results: list[dict[str, Any]]) -> AgentFinalAnswer:
+    def _collect_evidence(self, tool_results: list[dict[str, Any]]) -> list[Any]:
         evidence = []
         for result in tool_results:
             for item in result.get("items", [])[:6]:
                 ref = normalize_evidence_reference(item)
                 if ref:
                     evidence.append(ref)
+        return evidence[:8]
+
+    def _fallback_answer(self, question: str | list[dict[str, Any]], tool_results: list[dict[str, Any]] | None = None) -> AgentFinalAnswer:
+        if tool_results is None:
+            tool_results = question if isinstance(question, list) else []
+            question = ""
+        deterministic = self._deterministic_answer(question, tool_results)
+        if deterministic:
+            return deterministic
+        evidence = self._collect_evidence(tool_results)
         freshness = merge_data_freshness(tool_results)
         if evidence:
             return AgentFinalAnswer(
                 answer="I gathered cluster evidence, but I could not produce a fully structured answer. Review the cited evidence and continue with a narrower follow-up if needed.",
-                evidence=evidence[:8],
+                evidence=evidence,
                 confidence="low",
                 data_freshness=freshness,
             )
@@ -270,3 +352,67 @@ class ClusterAgentOrchestrator:
             confidence="low",
             data_freshness=freshness,
         )
+
+    def _deterministic_answer(self, question: str, tool_results: list[dict[str, Any]]) -> AgentFinalAnswer | None:
+        normalized = question.lower()
+        freshness = merge_data_freshness(tool_results)
+        evidence = self._collect_evidence(tool_results)
+        snapshot_item = next(
+            (
+                item
+                for result in tool_results
+                for item in result.get("items", [])
+                if isinstance(item, dict) and item.get("source_type") == "snapshot"
+            ),
+            None,
+        )
+        issue_summary = next((result for result in tool_results if isinstance(result.get("aggregates"), list)), None)
+        incident_summary = next(
+            (
+                result
+                for result in tool_results
+                if any(isinstance(item, dict) and item.get("source_type") == "incident" for item in result.get("items", []))
+            ),
+            None,
+        )
+
+        if snapshot_item and any(token in normalized for token in ["how many", "count", "number of"]):
+            if "namespace" in normalized and isinstance(snapshot_item.get("namespaces"), int):
+                count = snapshot_item["namespaces"]
+                return AgentFinalAnswer(
+                    answer=f"The latest stored cluster snapshot shows {count} namespace{'s' if count != 1 else ''}.",
+                    evidence=evidence,
+                    confidence="high",
+                    data_freshness=freshness,
+                )
+            if "pod" in normalized and isinstance(snapshot_item.get("pods"), int):
+                count = snapshot_item["pods"]
+                return AgentFinalAnswer(
+                    answer=f"The latest stored cluster snapshot shows {count} pod{'s' if count != 1 else ''}.",
+                    evidence=evidence,
+                    confidence="high",
+                    data_freshness=freshness,
+                )
+            if "deployment" in normalized and isinstance(snapshot_item.get("deployments"), int):
+                count = snapshot_item["deployments"]
+                return AgentFinalAnswer(
+                    answer=f"The latest stored cluster snapshot shows {count} deployment{'s' if count != 1 else ''}.",
+                    evidence=evidence,
+                    confidence="high",
+                    data_freshness=freshness,
+                )
+
+        if any(token in normalized for token in ["error", "issue", "incident", "problem"]) and any(token in normalized for token in ["how many", "count", "number of"]):
+            parts: list[str] = []
+            if issue_summary and isinstance(issue_summary.get("count"), int):
+                parts.append(f"{issue_summary['count']} recent issue{'s' if issue_summary['count'] != 1 else ''}")
+            if incident_summary and isinstance(incident_summary.get("count"), int):
+                parts.append(f"{incident_summary['count']} recent incident{'s' if incident_summary['count'] != 1 else ''}")
+            if parts:
+                return AgentFinalAnswer(
+                    answer=f"From the stored cluster evidence, I found {' and '.join(parts)} in the recent window I checked.",
+                    evidence=evidence,
+                    confidence="medium",
+                    data_freshness=freshness,
+                )
+        return None
