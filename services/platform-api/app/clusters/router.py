@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.agent.orchestrator import ClusterAgentOrchestrator
+from app.ai.client import AzureAIFoundryRateLimitError
 from app.ai.cluster_query import ClusterQueryService
 from app.audit.service import write_audit
 from app.auth.dependencies import get_current_user
@@ -645,6 +646,8 @@ async def cluster_ai_chat(clusterId: UUID, body: AIChatRequest, user: User = Dep
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AzureAIFoundryRateLimitError as exc:
+        raise HTTPException(status_code=429, detail="AI provider is rate limited. Please retry in a moment.") from exc
     except RuntimeError as exc:
         detail = str(exc)
         if detail == "AI provider unavailable":

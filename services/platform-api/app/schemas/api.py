@@ -349,7 +349,7 @@ class AIConversationDetailResponse(BaseModel):
 
 class AIChatRequest(BaseModel):
     conversation_id: UUID | None = None
-    message: str = Field(min_length=3, max_length=4000)
+    message: str = Field(min_length=1, max_length=4000)
 
 
 class AIChatResponse(BaseModel):

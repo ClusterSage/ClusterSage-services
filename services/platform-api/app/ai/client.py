@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+from urllib.error import HTTPError
 from urllib import parse, request
 
 from azure.identity import DefaultAzureCredential
 
 from app.core.config import settings
+
+
+class AzureAIFoundryRateLimitError(RuntimeError):
+    pass
 
 
 class AzureAIFoundryClient:
@@ -49,8 +54,15 @@ class AzureAIFoundryClient:
             headers=self._headers(),
             method="POST",
         )
-        with request.urlopen(req, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code == 429:
+                raise AzureAIFoundryRateLimitError("AI provider rate limited") from exc
+            if exc.code in {401, 403}:
+                raise RuntimeError("AI provider unavailable") from exc
+            raise
         return payload
 
     def analyze(self, *, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float) -> dict:
