@@ -471,6 +471,9 @@ class ClusterAgentOrchestrator:
         return f" in the last {amount} {unit}"
 
     def _humanize_json_answer(self, question: str, payload: dict[str, Any]) -> str | None:
+        response_text = payload.get("response")
+        if isinstance(response_text, str) and response_text.strip():
+            return response_text.strip()
         if "namespace_count" in payload:
             count = payload["namespace_count"]
             return f"The latest stored cluster snapshot shows {count} namespace{'s' if count != 1 else ''}."
