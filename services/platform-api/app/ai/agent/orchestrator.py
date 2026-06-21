@@ -510,6 +510,10 @@ class ClusterAgentOrchestrator:
             if isinstance(note, str) and note.strip():
                 answer += f" {note.strip()}"
             return answer
+        errors = payload.get("errors")
+        if isinstance(errors, list):
+            summary = self._summarize_detail_rows(errors)
+            return f"The errors I found are {summary}."
         string_fields = [value.strip() for value in payload.values() if isinstance(value, str) and value.strip()]
         if len(payload) == 1 and len(string_fields) == 1:
             return string_fields[0]
@@ -524,7 +528,7 @@ class ClusterAgentOrchestrator:
             count = item.get("count")
             namespace = item.get("namespace")
             phrase = f"{count} {label}" if isinstance(count, int) else str(label)
-            workload_name = item.get("workload_name") or item.get("pod_name")
+            workload_name = item.get("workload_name") or item.get("workload") or item.get("pod_name")
             if namespace:
                 phrase += f" in {namespace}"
             if workload_name:
