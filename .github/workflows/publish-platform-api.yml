@@ -48,8 +48,50 @@ jobs:
       - name: Compile application
         run: python -m compileall app
 
-      - name: Build Docker image
-        run: docker build -t clustersage-backend:${{ github.sha }} .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tag
+        id: vars
+        shell: bash
+        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_REPOSITORY }}
+          tags: |
+            type=raw,value=${{ steps.vars.outputs.image_tag }}
+          labels: |
+            org.opencontainers.image.title=ClusterSage Platform API
+            org.opencontainers.image.description=ClusterSage platform API container image
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build platform API image for scan
+        id: build_local
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/platform-api
+          file: ./services/platform-api/Dockerfile
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy scan platform API image
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REPOSITORY }}:${{ steps.vars.outputs.image_tag }}
+          format: table
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          exit-code: "1"
 
       - name: Validate Azure OIDC inputs
         run: |
@@ -77,28 +119,7 @@ jobs:
       - name: Log in to Azure Container Registry
         run: az acr login --name "$ACR_NAME"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Compute image tag
-        id: vars
-        shell: bash
-        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_REPOSITORY }}
-          tags: |
-            type=raw,value=${{ steps.vars.outputs.image_tag }}
-          labels: |
-            org.opencontainers.image.title=ClusterSage Platform API
-            org.opencontainers.image.description=ClusterSage platform API container image
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-
-      - name: Build and push platform API image
+      - name: Push platform API image
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -120,16 +141,6 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         shell: bash
-
-      - name: Trivy scan platform API image
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}
-          format: table
-          ignore-unfixed: true
-          severity: HIGH,CRITICAL
-          exit-code: "1"
 
       - name: Install yq
         shell: bash
