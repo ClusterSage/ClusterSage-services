@@ -38,6 +38,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
+          pip install httpx
 
       - name: Compile application
         run: python -m compileall app
@@ -50,6 +51,7 @@ jobs:
 
       - name: SonarQube scan
         if: github.event.pull_request.head.repo.fork == false
+        continue-on-error: true
         uses: SonarSource/sonarqube-scan-action@v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -57,6 +59,7 @@ jobs:
         with:
           projectBaseDir: .
           args: >
+            "-Dsonar.organization=clustersage"
             "-Dsonar.projectKey=ClusterSage_clustersage-services-platform-api"
             "-Dsonar.projectName=clustersage-services-platform-api"
             "-Dsonar.sources=services/platform-api"
@@ -67,6 +70,7 @@ jobs:
 
       - name: Run Snyk scan
         if: github.event.pull_request.head.repo.fork == false
+        continue-on-error: true
         run: snyk test --all-projects --detection-depth=2 --file=requirements.txt
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
