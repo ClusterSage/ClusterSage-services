@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.agent.orchestrator import ClusterAgentOrchestrator
 from app.ai.client import AzureAIFoundryRateLimitError
@@ -14,12 +14,11 @@ from app.core.config import settings
 from app.metrics import (
     build_latest_metric_response,
     build_metric_filter_catalog,
-    build_metric_timeseries_response,
     build_metrics_overview,
     metrics_window_start,
 )
 from app.models.entities import AIConversation, AIIncident, AIMessage, Cluster, ClusterMetricSample, ClusterSnapshot, Issue, LogBatch, RemediationAction, RemediationApproval, RemediationSuggestion, User
-from app.schemas.api import AIChatRequest, AIChatResponse, AIClusterQueryRequest, AIClusterQueryResponse, AIConversationDetailResponse, AIConversationMessageResponse, AIConversationResponse, AIIncidentResponse, ClusterMetricFilterCatalogResponse, ClusterMetricLatestResponse, ClusterMetricsOverviewResponse, ClusterMetricTimeseriesResponse, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
+from app.schemas.api import AIChatRequest, AIChatResponse, AIClusterQueryRequest, AIClusterQueryResponse, AIConversationDetailResponse, AIConversationMessageResponse, AIConversationResponse, AIIncidentResponse, ClusterMetricFilterCatalogResponse, ClusterMetricLatestResponse, ClusterMetricsOverviewResponse, ClusterMetricTimeseriesPoint, ClusterMetricTimeseriesResponse, ClusterMetricTimeseriesSeries, ClusterResponse, IssueResponse, LogBatchResponse, ResourceAISuggestionResponse, ResourceLogEntry, ResourceSummary, SnapshotResponse
 from app.storage.blob import BlobReader
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
@@ -260,6 +259,257 @@ def apply_metric_filters(
         query = query.where(ClusterMetricSample.container_name == container_name)
     return query
 
+
+def metric_filter_sql_clauses(
+    alias: str,
+    params: dict[str, Any],
+    *,
+    cluster_id: UUID,
+    organization_id: UUID,
+    metric_name: str | None = None,
+    scope: str | None = None,
+    namespace: str | None = None,
+    resource_kind: str | None = None,
+    resource_name: str | None = None,
+    node_name: str | None = None,
+    container_name: str | None = None,
+) -> list[str]:
+    clauses = [
+        f"{alias}.cluster_id = :cluster_id",
+        f"{alias}.organization_id = :organization_id",
+    ]
+    params["cluster_id"] = cluster_id
+    params["organization_id"] = organization_id
+    if metric_name:
+        clauses.append(f"{alias}.metric_name = :metric_name")
+        params["metric_name"] = metric_name
+    if scope:
+        clauses.append(f"{alias}.scope = :scope")
+        params["scope"] = scope
+    if namespace:
+        clauses.append(f"{alias}.namespace = :namespace")
+        params["namespace"] = namespace
+    if resource_kind:
+        clauses.append(f"{alias}.resource_kind = :resource_kind")
+        params["resource_kind"] = resource_kind
+    if resource_name:
+        clauses.append(f"{alias}.resource_name = :resource_name")
+        params["resource_name"] = resource_name
+    if node_name:
+        clauses.append(f"{alias}.node_name = :node_name")
+        params["node_name"] = node_name
+    if container_name:
+        clauses.append(f"{alias}.container_name = :container_name")
+        params["container_name"] = container_name
+    return clauses
+
+
+async def query_metric_timeseries_response(
+    session: AsyncSession,
+    *,
+    cluster_id: UUID,
+    organization_id: UUID,
+    metric_name: str,
+    scope: str | None,
+    namespace: str | None,
+    resource_kind: str | None,
+    resource_name: str | None,
+    node_name: str | None,
+    container_name: str | None,
+    window_start: datetime,
+    window_minutes: int,
+    step_minutes: int,
+    limit: int,
+) -> ClusterMetricTimeseriesResponse:
+    params: dict[str, Any] = {
+        "window_start": window_start,
+        "step_minutes": step_minutes,
+        "limit": limit,
+    }
+    clauses = metric_filter_sql_clauses(
+        "samples",
+        params,
+        cluster_id=cluster_id,
+        organization_id=organization_id,
+        metric_name=metric_name,
+        scope=scope,
+        namespace=namespace,
+        resource_kind=resource_kind,
+        resource_name=resource_name,
+        node_name=node_name,
+        container_name=container_name,
+    )
+    sql = text(
+        f"""
+        WITH filtered AS (
+            SELECT
+                samples.scope,
+                samples.resource_kind,
+                samples.resource_name,
+                COALESCE(samples.namespace, '') AS namespace_key,
+                COALESCE(samples.node_name, '') AS node_name_key,
+                COALESCE(samples.container_name, '') AS container_name_key,
+                samples.unit,
+                samples.value,
+                samples.collected_at
+            FROM cluster_metric_samples AS samples
+            WHERE {' AND '.join(clauses)} AND samples.collected_at >= :window_start
+        ),
+        grouped AS (
+            SELECT
+                scope,
+                resource_kind,
+                resource_name,
+                namespace_key,
+                node_name_key,
+                container_name_key,
+                unit,
+                date_bin((:step_minutes || ' minutes')::interval, collected_at, '1970-01-01 00:00:00+00'::timestamptz) AS bucket,
+                SUM(value) AS bucket_value
+            FROM filtered
+            GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+        ),
+        latest AS (
+            SELECT DISTINCT ON (scope, resource_kind, resource_name, namespace_key, node_name_key, container_name_key, unit)
+                scope,
+                resource_kind,
+                resource_name,
+                namespace_key,
+                node_name_key,
+                container_name_key,
+                unit,
+                value AS latest_value
+            FROM filtered
+            ORDER BY
+                scope,
+                resource_kind,
+                resource_name,
+                namespace_key,
+                node_name_key,
+                container_name_key,
+                unit,
+                collected_at DESC
+        ),
+        peaks AS (
+            SELECT
+                scope,
+                resource_kind,
+                resource_name,
+                namespace_key,
+                node_name_key,
+                container_name_key,
+                unit,
+                MAX(bucket_value) AS peak_value
+            FROM grouped
+            GROUP BY 1, 2, 3, 4, 5, 6, 7
+        ),
+        ranked AS (
+            SELECT
+                peaks.scope,
+                peaks.resource_kind,
+                peaks.resource_name,
+                peaks.namespace_key,
+                peaks.node_name_key,
+                peaks.container_name_key,
+                peaks.unit,
+                latest.latest_value,
+                peaks.peak_value,
+                ROW_NUMBER() OVER (
+                    ORDER BY
+                        peaks.peak_value DESC,
+                        peaks.resource_name ASC,
+                        peaks.namespace_key ASC,
+                        peaks.node_name_key ASC,
+                        peaks.container_name_key ASC
+                ) AS series_rank
+            FROM peaks
+            JOIN latest
+                ON latest.scope = peaks.scope
+                AND latest.resource_kind = peaks.resource_kind
+                AND latest.resource_name = peaks.resource_name
+                AND latest.namespace_key = peaks.namespace_key
+                AND latest.node_name_key = peaks.node_name_key
+                AND latest.container_name_key = peaks.container_name_key
+                AND latest.unit = peaks.unit
+        )
+        SELECT
+            ranked.series_rank,
+            ranked.scope,
+            ranked.resource_kind,
+            ranked.resource_name,
+            NULLIF(ranked.namespace_key, '') AS namespace,
+            NULLIF(ranked.node_name_key, '') AS node_name,
+            NULLIF(ranked.container_name_key, '') AS container_name,
+            ranked.unit,
+            ranked.latest_value,
+            grouped.bucket,
+            grouped.bucket_value
+        FROM ranked
+        JOIN grouped
+            ON grouped.scope = ranked.scope
+            AND grouped.resource_kind = ranked.resource_kind
+            AND grouped.resource_name = ranked.resource_name
+            AND grouped.namespace_key = ranked.namespace_key
+            AND grouped.node_name_key = ranked.node_name_key
+            AND grouped.container_name_key = ranked.container_name_key
+            AND grouped.unit = ranked.unit
+        WHERE ranked.series_rank <= :limit
+        ORDER BY ranked.series_rank ASC, grouped.bucket ASC
+        """
+    )
+    rows = (await session.execute(sql, params)).mappings().all()
+    if not rows:
+        return ClusterMetricTimeseriesResponse(
+            metric_name=metric_name,
+            unit=None,
+            window_minutes=window_minutes,
+            step_minutes=step_minutes,
+            series=[],
+        )
+
+    series_by_rank: dict[int, dict[str, Any]] = {}
+    ordered_ranks: list[int] = []
+    for row in rows:
+        rank = int(row["series_rank"])
+        if rank not in series_by_rank:
+            ordered_ranks.append(rank)
+            series_by_rank[rank] = {
+                "scope": row["scope"],
+                "resource_kind": row["resource_kind"],
+                "resource_name": row["resource_name"],
+                "namespace": row["namespace"],
+                "node_name": row["node_name"],
+                "container_name": row["container_name"],
+                "unit": row["unit"],
+                "latest_value": row["latest_value"],
+                "points": [],
+            }
+        series_by_rank[rank]["points"].append(
+            ClusterMetricTimeseriesPoint(timestamp=row["bucket"], value=row["bucket_value"])
+        )
+
+    series = [
+        ClusterMetricTimeseriesSeries(
+            scope=series_by_rank[rank]["scope"],
+            resource_kind=series_by_rank[rank]["resource_kind"],
+            resource_name=series_by_rank[rank]["resource_name"],
+            namespace=series_by_rank[rank]["namespace"],
+            node_name=series_by_rank[rank]["node_name"],
+            container_name=series_by_rank[rank]["container_name"],
+            unit=series_by_rank[rank]["unit"],
+            latest_value=series_by_rank[rank]["latest_value"],
+            points=series_by_rank[rank]["points"],
+        )
+        for rank in ordered_ranks
+    ]
+    return ClusterMetricTimeseriesResponse(
+        metric_name=metric_name,
+        unit=series[0].unit if series else None,
+        window_minutes=window_minutes,
+        step_minutes=step_minutes,
+        series=series,
+    )
+
 @router.get("/{clusterId}/metrics/overview", response_model=ClusterMetricsOverviewResponse)
 async def cluster_metrics_overview(clusterId: UUID, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     await get_cluster(clusterId, user, session)
@@ -354,27 +604,18 @@ async def cluster_metric_timeseries(
     step_minutes = max(1, min(step_minutes, 60))
     limit = max(1, min(limit, 20))
     window_start = metrics_window_start(datetime.now(timezone.utc), window_minutes)
-    samples = (
-        await session.execute(
-            apply_metric_filters(
-                select(ClusterMetricSample),
-                cluster_id=clusterId,
-                organization_id=user.organization_id,
-                metric_name=metric_name,
-                scope=scope,
-                namespace=namespace,
-                resource_kind=resource_kind,
-                resource_name=resource_name,
-                node_name=node_name,
-                container_name=container_name,
-            )
-            .where(ClusterMetricSample.collected_at >= window_start)
-            .order_by(ClusterMetricSample.collected_at.asc())
-        )
-    ).scalars().all()
-    return build_metric_timeseries_response(
-        samples,
+    return await query_metric_timeseries_response(
+        session,
+        cluster_id=clusterId,
+        organization_id=user.organization_id,
         metric_name=metric_name,
+        scope=scope,
+        namespace=namespace,
+        resource_kind=resource_kind,
+        resource_name=resource_name,
+        node_name=node_name,
+        container_name=container_name,
+        window_start=window_start,
         window_minutes=window_minutes,
         step_minutes=step_minutes,
         limit=limit,
