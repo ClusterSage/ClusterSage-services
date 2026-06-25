@@ -364,7 +364,7 @@ async def query_metric_timeseries_response(
                 node_name_key,
                 container_name_key,
                 unit,
-                date_bin((:step_minutes || ' minutes')::interval, collected_at, '1970-01-01 00:00:00+00'::timestamptz) AS bucket,
+                date_bin((CAST(:step_minutes AS integer) * interval '1 minute'), collected_at, '1970-01-01 00:00:00+00'::timestamptz) AS bucket,
                 SUM(value) AS bucket_value
             FROM filtered
             GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
